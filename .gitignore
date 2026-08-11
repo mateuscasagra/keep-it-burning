@@ -1,0 +1,20 @@
+# Executáveis
+*.exe
+*.exe~
+KeepItBurning.exe
+keep-it-burning
+
+# Dados locais do aplicativo (nunca versionar: são pessoais)
+data.json
+*.local.json
+
+# Saída de testes
+*.out
+*.test
+coverage.txt
+
+# Editores e sistema
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
