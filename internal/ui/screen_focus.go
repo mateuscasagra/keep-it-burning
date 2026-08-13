@@ -40,8 +40,8 @@ func (s *focusScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	running := a.tmr.Running()
 	elapsed := a.tmr.Elapsed()
 	intensity := a.dayIntensity()
-
-	tasks := a.state.TodayTasks(a.mode)
+	diaHoraAtual := time.Now()
+	tasks := a.state.TodayTasks(a.mode, diaHoraAtual)
 	alive := make(map[string]bool, len(tasks))
 	for _, t := range tasks {
 		alive[t.ID] = true

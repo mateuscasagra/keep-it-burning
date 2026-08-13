@@ -318,10 +318,10 @@ func (s *State) SetToday(id string, today bool, at time.Time) error {
 	for i := range s.Tasks {
 		if s.Tasks[i].ID == id {
 			s.Tasks[i].Today = today
-			s.Tasks[i].TodayAt = at
-
 			if !today {
 				s.Tasks[i].TodayAt = time.Time{}
+			} else {
+				s.Tasks[i].TodayAt = at
 			}
 			return nil
 		}
@@ -369,17 +369,12 @@ func (s *State) PendingTasks(m Mode) []Task {
 
 // TodayTasks devolve as tarefas marcadas como tarefa do dia, incluindo as já
 // concluídas — o usuário precisa ver o que já riscou da lista.
-func (s *State) TodayTasks(m Mode) []Task {
+func (s *State) TodayTasks(m Mode, diaHoraAtual time.Time) []Task {
 	out := make([]Task, 0, len(s.Tasks))
 	for _, t := range s.Tasks {
 		if t.Mode == m && t.Today {
-			if t.TodayAt.IsZero() {
-				out = append(out, t)
-			}
-
-			diffTempo := t.CreatedAt.Sub(t.DoneAt)
-
-			if diffTempo.Hours() > 24 {
+			diff24Horas := diaHoraAtual.Sub(t.DoneAt)
+			if diff24Horas.Hours() < 24 || t.DoneAt.IsZero() {
 				out = append(out, t)
 			}
 

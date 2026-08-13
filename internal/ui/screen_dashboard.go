@@ -226,7 +226,8 @@ func (s *dashboardScreen) firePanel(gtx layout.Context, a *App, rep productivity
 
 // todayPanel é o cartão "Tarefas do dia", com as caixinhas de conclusão.
 func (s *dashboardScreen) todayPanel(gtx layout.Context, a *App) layout.Dimensions {
-	tasks := a.state.TodayTasks(a.mode)
+	diaHoraAtual := time.Now()
+	tasks := a.state.TodayTasks(a.mode, diaHoraAtual)
 
 	alive := make(map[string]bool, len(tasks))
 	for _, t := range tasks {
