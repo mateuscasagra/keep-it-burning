@@ -63,9 +63,10 @@ type Task struct {
 	DueAt       time.Time `json:"dueAt"`
 	// Today marca a tarefa como "tarefa do dia": ela aparece no painel lateral
 	// do dashboard e na janela reduzida durante a sessão.
-	Today  bool      `json:"today"`
-	Done   bool      `json:"done"`
-	DoneAt time.Time `json:"doneAt"`
+	Today   bool      `json:"today"`
+	TodayAt time.Time `json:"todayat"`
+	Done    bool      `json:"done"`
+	DoneAt  time.Time `json:"doneAt"`
 }
 
 // HasDue informa se a tarefa tem data limite definida.
@@ -313,10 +314,15 @@ func (s *State) SetDone(id string, done bool, at time.Time) error {
 }
 
 // SetToday marca ou desmarca a tarefa como tarefa do dia.
-func (s *State) SetToday(id string, today bool) error {
+func (s *State) SetToday(id string, today bool, at time.Time) error {
 	for i := range s.Tasks {
 		if s.Tasks[i].ID == id {
 			s.Tasks[i].Today = today
+			s.Tasks[i].TodayAt = at
+
+			if !today {
+				s.Tasks[i].TodayAt = time.Time{}
+			}
 			return nil
 		}
 	}
@@ -367,7 +373,16 @@ func (s *State) TodayTasks(m Mode) []Task {
 	out := make([]Task, 0, len(s.Tasks))
 	for _, t := range s.Tasks {
 		if t.Mode == m && t.Today {
-			out = append(out, t)
+			if t.TodayAt.IsZero() {
+				out = append(out, t)
+			}
+
+			diffTempo := t.CreatedAt.Sub(t.DoneAt)
+
+			if diffTempo.Hours() > 24 {
+				out = append(out, t)
+			}
+
 		}
 	}
 	s.sortByUrgency(m, out)

@@ -124,7 +124,7 @@ func TestSetDoneGravaEApagaOCarimbo(t *testing.T) {
 func TestSetToday(t *testing.T) {
 	s := NewState()
 	s.AddTask(Task{ID: "t1", Mode: ModeWork, Title: "Resolver bug"})
-	if err := s.SetToday("t1", true); err != nil {
+	if err := s.SetToday("t1", true, time.Now()); err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
 	if got, _ := s.Task("t1"); !got.Today {
@@ -269,7 +269,7 @@ func TestSetDoneESetTodayEmTarefaInexistente(t *testing.T) {
 	if err := s.SetDone("fantasma", true, at(5, 12)); !errors.Is(err, ErrTaskNotFound) {
 		t.Errorf("SetDone: quero ErrTaskNotFound, tenho %v", err)
 	}
-	if err := s.SetToday("fantasma", true); !errors.Is(err, ErrTaskNotFound) {
+	if err := s.SetToday("fantasma", true, time.Now()); !errors.Is(err, ErrTaskNotFound) {
 		t.Errorf("SetToday: quero ErrTaskNotFound, tenho %v", err)
 	}
 }

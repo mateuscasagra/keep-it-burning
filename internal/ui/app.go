@@ -295,7 +295,7 @@ func (a *App) toggleToday(id string) {
 	if !ok {
 		return
 	}
-	if err := a.state.SetToday(id, !t.Today); err != nil {
+	if err := a.state.SetToday(id, !t.Today, time.Now()); err != nil {
 		a.setError(err.Error())
 		return
 	}
