@@ -90,6 +90,11 @@ func (s *focusScreen) item(gtx layout.Context, a *App, t model.Task) layout.Dime
 	if row.check.Clicked(gtx) {
 		a.toggleDone(t.ID)
 	}
+	if row.view.Clicked(gtx) {
+		// Abrir a visualização não mexe no cronômetro: a sessão continua.
+		a.view.open(t.ID, screenFocus)
+		a.goTo(screenTaskView)
+	}
 	c := colorInk
 	if t.Done {
 		c = colorInkFaint
@@ -97,8 +102,12 @@ func (s *focusScreen) item(gtx layout.Context, a *App, t model.Task) layout.Dime
 	return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx,
 		func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Flexed(1, a.th.label(unit.Sp(15), truncate(t.Title, 22), c).Layout),
+				layout.Flexed(1, a.th.label(unit.Sp(15), truncate(t.Title, 18), c).Layout),
 				layout.Rigid(spacerX(8).Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.th.tiny("ver").Layout(gtx, a.th, &row.view)
+				}),
+				layout.Rigid(spacerX(6).Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return checkbox(gtx, a.th, &row.check, t.Done)
 				}),

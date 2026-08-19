@@ -31,6 +31,7 @@ const (
 	screenSettings
 	screenStats
 	screenFocus
+	screenTaskView
 )
 
 // Tamanhos das janelas. A janela cheia é o dashboard; a reduzida é o modo
@@ -71,6 +72,7 @@ type App struct {
 	settings settingsScreen
 	stats    statsScreen
 	focus    focusScreen
+	view     taskViewScreen
 }
 
 // New monta o aplicativo, carregando o estado gravado.
@@ -94,6 +96,7 @@ func New(win *app.Window, st *store.Store) (*App, error) {
 	a.settings.init(a)
 	a.stats.init(a)
 	a.focus.init(a)
+	a.view.init(a)
 	return a, nil
 }
 
@@ -150,6 +153,8 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 		return a.stats.Layout(gtx, a)
 	case screenFocus:
 		return a.focus.Layout(gtx, a)
+	case screenTaskView:
+		return a.view.Layout(gtx, a)
 	default:
 		return layout.Dimensions{Size: gtx.Constraints.Max}
 	}

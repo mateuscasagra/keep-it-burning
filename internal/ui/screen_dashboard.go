@@ -21,6 +21,7 @@ type taskRow struct {
 	edit  widget.Clickable
 	del   widget.Clickable
 	today widget.Clickable
+	view  widget.Clickable
 }
 
 // rowSet é um conjunto de linhas indexado pelo ID da tarefa.
