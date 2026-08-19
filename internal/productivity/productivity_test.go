@@ -405,3 +405,75 @@ func TestPeriodLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskStatsForSeparaPrioridadesEPontualidade(t *testing.T) {
+	st := stateFixture()
+	st.Tasks = []model.Task{
+		// Entregues no dia 5: uma alta no prazo, uma média atrasada.
+		{ID: "alta-ok", Mode: model.ModeWork, PriorityID: "alta", Done: true,
+			CreatedAt: at(3, 9, 0), DueAt: at(5, 18, 0), DoneAt: at(5, 12, 0)},
+		{ID: "media-atrasada", Mode: model.ModeWork, PriorityID: "media", Done: true,
+			CreatedAt: at(4, 9, 0), DueAt: at(4, 18, 0), DoneAt: at(5, 10, 0)},
+		// Entregue fora do período: não conta nas entregues.
+		{ID: "fora-do-dia", Mode: model.ModeWork, PriorityID: "alta", Done: true, DoneAt: at(2, 10, 0)},
+		// Em aberto: uma baixa vencida, uma alta sem prazo, uma média futura.
+		{ID: "baixa-vencida", Mode: model.ModeWork, PriorityID: "baixa", DueAt: at(4, 18, 0)},
+		{ID: "alta-sem-prazo", Mode: model.ModeWork, PriorityID: "alta"},
+		{ID: "media-futura", Mode: model.ModeWork, PriorityID: "media", DueAt: at(20, 18, 0)},
+		// Outro modo: ignorada.
+		{ID: "estudo", Mode: model.ModeStudy, PriorityID: "alta"},
+	}
+
+	ts := TaskStatsFor(st, model.ModeWork, PeriodDay, at(5, 15, 0))
+
+	if ts.DoneCount != 2 || ts.OpenCount != 3 {
+		t.Fatalf("done=%d open=%d, quero 2 e 3", ts.DoneCount, ts.OpenCount)
+	}
+	want := map[string][2]int{"Alta": {1, 1}, "Média": {1, 1}, "Baixa": {0, 1}}
+	for _, l := range ts.Lines {
+		w, ok := want[l.Label]
+		if !ok {
+			t.Errorf("linha inesperada: %q", l.Label)
+			continue
+		}
+		if l.Done != w[0] || l.Open != w[1] {
+			t.Errorf("%s: done=%d open=%d, quero %d e %d", l.Label, l.Done, l.Open, w[0], w[1])
+		}
+	}
+	if ts.DoneWithDue != 2 || ts.DoneLate != 1 || !nearly(ts.LateRatio, 0.5) {
+		t.Errorf("pontualidade: comPrazo=%d atrasadas=%d ratio=%v, quero 2, 1 e 0.5",
+			ts.DoneWithDue, ts.DoneLate, ts.LateRatio)
+	}
+	if ts.OverdueOpen != 1 || ts.NoDueOpen != 1 {
+		t.Errorf("abertas: vencidas=%d semPrazo=%d, quero 1 e 1", ts.OverdueOpen, ts.NoDueOpen)
+	}
+	// Entregas: alta levou 51h, média levou 25h → média de 38h.
+	if want := 38 * time.Hour; ts.AvgDelivery != want {
+		t.Errorf("AvgDelivery = %v, quero %v", ts.AvgDelivery, want)
+	}
+}
+
+func TestTimeStatsForResumeSessoes(t *testing.T) {
+	st := stateFixture()
+	st.Sessions = []model.Session{
+		{ID: "a", Mode: model.ModeWork, Start: at(5, 9, 0), End: at(5, 12, 0)},  // 3h
+		{ID: "b", Mode: model.ModeWork, Start: at(5, 14, 0), End: at(5, 15, 0)}, // 1h
+		{ID: "c", Mode: model.ModeWork, Start: at(4, 9, 0), End: at(4, 10, 0)},  // fora do dia
+		{ID: "d", Mode: model.ModeStudy, Start: at(5, 9, 0), End: at(5, 10, 0)}, // outro modo
+	}
+
+	ts := TimeStatsFor(st, model.ModeWork, PeriodDay, at(5, 15, 0))
+
+	if ts.Worked != 4*time.Hour || ts.Target != 8*time.Hour {
+		t.Fatalf("worked=%v target=%v, quero 4h e 8h", ts.Worked, ts.Target)
+	}
+	if ts.Sessions != 2 || ts.AvgSession != 2*time.Hour || ts.Longest != 3*time.Hour {
+		t.Errorf("sessões=%d média=%v maisLonga=%v, quero 2, 2h e 3h", ts.Sessions, ts.AvgSession, ts.Longest)
+	}
+	if ts.ActiveDays != 1 || ts.AvgPerDay != 4*time.Hour {
+		t.Errorf("diasAtivos=%d médiaDia=%v, quero 1 e 4h", ts.ActiveDays, ts.AvgPerDay)
+	}
+	if !ts.BestDay.Equal(at(5, 0, 0)) || ts.BestDayTime != 4*time.Hour {
+		t.Errorf("melhor dia = %v (%v), quero 05/02 com 4h", ts.BestDay, ts.BestDayTime)
+	}
+}

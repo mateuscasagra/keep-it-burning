@@ -332,6 +332,170 @@ func buildIndicators(st *model.State, mode model.Mode, done []model.Task, from, 
 	return ind
 }
 
+// PriorityLine é uma linha da tabela de tarefas por prioridade: quantas foram
+// entregues no período e quantas seguem em aberto hoje.
+type PriorityLine struct {
+	Label string
+	Done  int
+	Open  int
+}
+
+// TaskStats detalha as tarefas: distribuição por prioridade, pontualidade e
+// tempo de entrega. As entregues são as do período; as em aberto são o total
+// atual do modo, porque uma tarefa aberta cobra o usuário independentemente
+// do recorte de datas.
+type TaskStats struct {
+	Lines []PriorityLine
+
+	DoneCount int
+	OpenCount int
+
+	// Pontualidade: das entregues que tinham prazo, quantas saíram atrasadas.
+	DoneWithDue int
+	DoneLate    int
+	LateRatio   float64
+
+	// Situação das em aberto.
+	OverdueOpen int
+	NoDueOpen   int
+
+	// AvgDelivery é o tempo médio entre a criação e a entrega das tarefas do
+	// período (zero quando nenhuma entrega é mensurável).
+	AvgDelivery time.Duration
+}
+
+// TaskStatsFor calcula a visão de tarefas de um modo no período, tomando ref
+// como "agora" para decidir o que já venceu.
+func TaskStatsFor(st *model.State, mode model.Mode, p Period, ref time.Time) TaskStats {
+	from, to := p.Range(ref)
+	done, _ := Partition(st.Tasks, mode, from, to)
+
+	var open []model.Task
+	for _, t := range st.Tasks {
+		if t.Mode == mode && !t.Done {
+			open = append(open, t)
+		}
+	}
+
+	stats := TaskStats{DoneCount: len(done), OpenCount: len(open)}
+
+	// Uma linha por prioridade configurada, na ordem da configuração; tarefas
+	// com prioridade desconhecida caem numa linha própria no fim.
+	index := map[string]int{}
+	for _, pr := range st.SettingsFor(mode).Priorities {
+		index[pr.ID] = len(stats.Lines)
+		stats.Lines = append(stats.Lines, PriorityLine{Label: pr.Title})
+	}
+	other := -1
+	line := func(id string) *PriorityLine {
+		if i, ok := index[id]; ok {
+			return &stats.Lines[i]
+		}
+		if other < 0 {
+			other = len(stats.Lines)
+			stats.Lines = append(stats.Lines, PriorityLine{Label: "Sem prioridade"})
+		}
+		return &stats.Lines[other]
+	}
+
+	var deliverySum time.Duration
+	var deliveryN int
+	for _, t := range done {
+		line(t.PriorityID).Done++
+		if t.HasDue() {
+			stats.DoneWithDue++
+			if t.DoneAt.After(t.DueAt) {
+				stats.DoneLate++
+			}
+		}
+		if !t.CreatedAt.IsZero() && t.DoneAt.After(t.CreatedAt) {
+			deliverySum += t.DoneAt.Sub(t.CreatedAt)
+			deliveryN++
+		}
+	}
+	for _, t := range open {
+		line(t.PriorityID).Open++
+		switch {
+		case !t.HasDue():
+			stats.NoDueOpen++
+		case t.DueAt.Before(ref):
+			stats.OverdueOpen++
+		}
+	}
+
+	if stats.DoneWithDue > 0 {
+		stats.LateRatio = float64(stats.DoneLate) / float64(stats.DoneWithDue)
+	}
+	if deliveryN > 0 {
+		stats.AvgDelivery = deliverySum / time.Duration(deliveryN)
+	}
+	return stats
+}
+
+// TimeStats detalha o tempo cronometrado do período: totais, sessões e o dia
+// mais carregado.
+type TimeStats struct {
+	Worked time.Duration
+	Target time.Duration
+
+	Sessions   int
+	AvgSession time.Duration
+	Longest    time.Duration
+
+	ActiveDays int
+	AvgPerDay  time.Duration
+	AvgPerWeek time.Duration
+
+	// BestDay é o dia com mais tempo cronometrado no período.
+	BestDay     time.Time
+	BestDayTime time.Duration
+}
+
+// TimeStatsFor calcula a visão de tempo de um modo no período.
+func TimeStatsFor(st *model.State, mode model.Mode, p Period, ref time.Time) TimeStats {
+	from, to := p.Range(ref)
+	stats := TimeStats{Target: TargetFor(st.SettingsFor(mode), p, from, to)}
+
+	perDay := map[time.Time]time.Duration{}
+	for _, s := range st.Sessions {
+		if s.Mode != mode {
+			continue
+		}
+		start, d := overlap(s, from, to)
+		if d <= 0 {
+			continue
+		}
+		stats.Sessions++
+		stats.Worked += d
+		if d > stats.Longest {
+			stats.Longest = d
+		}
+		perDay[dates.StartOfDay(start)] += d
+	}
+
+	stats.ActiveDays = len(perDay)
+	for day, d := range perDay {
+		// Empate resolve para o dia mais antigo, para o resultado não oscilar
+		// com a ordem de iteração do mapa.
+		if d > stats.BestDayTime || (d == stats.BestDayTime && day.Before(stats.BestDay)) {
+			stats.BestDay, stats.BestDayTime = day, d
+		}
+	}
+
+	if stats.Sessions > 0 {
+		stats.AvgSession = stats.Worked / time.Duration(stats.Sessions)
+	}
+	if stats.ActiveDays > 0 {
+		stats.AvgPerDay = stats.Worked / time.Duration(stats.ActiveDays)
+	}
+	weeks := int(math.Ceil(float64(dates.DaysBetween(from, to)) / 7))
+	if weeks < 1 {
+		weeks = 1
+	}
+	stats.AvgPerWeek = stats.Worked / time.Duration(weeks)
+	return stats
+}
+
 // Intensity converte um score de 0 a 100 na intensidade do fogo, de 0 a 1.
 // É o que liga a produtividade à animação da fogueira.
 func Intensity(score float64) float64 {
