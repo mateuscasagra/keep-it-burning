@@ -1,10 +1,23 @@
 package ui
 
 import (
+	"image"
 	"image/color"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
+	// Decodificadores das imagens exibidas no preview de anexos.
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/webp"
+
 	"gioui.org/layout"
+	"gioui.org/op/paint"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
@@ -22,6 +35,54 @@ type taskViewScreen struct {
 	back  widget.Clickable
 	check widget.Clickable
 	list  widget.List
+	// openBtns são os botões "abrir": primeiro os links, depois os arquivos.
+	openBtns []widget.Clickable
+	// imgs guarda as imagens decodificadas para o preview, por caminho.
+	imgs map[string]*previewImage
+}
+
+// previewImage é uma imagem decodificada (ou a marca de que falhou).
+type previewImage struct {
+	op paint.ImageOp
+	ok bool
+}
+
+// preview decodifica (uma única vez) a imagem do caminho para exibir na tela.
+func (s *taskViewScreen) preview(path string) *previewImage {
+	if s.imgs == nil {
+		s.imgs = map[string]*previewImage{}
+	}
+	if p, ok := s.imgs[path]; ok {
+		return p
+	}
+	p := &previewImage{}
+	if f, err := os.Open(path); err == nil {
+		if img, _, err := image.Decode(f); err == nil {
+			p.op = paint.NewImageOp(img)
+			p.ok = true
+		}
+		f.Close()
+	}
+	s.imgs[path] = p
+	return p
+}
+
+// isImagePath informa se o arquivo é uma imagem que o app sabe exibir.
+func isImagePath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+		return true
+	}
+	return false
+}
+
+// isVideoPath informa se o arquivo é um vídeo (aberto no player do sistema).
+func isVideoPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm":
+		return true
+	}
+	return false
 }
 
 func (s *taskViewScreen) init(a *App) {
@@ -47,6 +108,16 @@ func (s *taskViewScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		// A tarefa sumiu (excluída em outra tela); volta sem desenhar nada.
 		a.goTo(s.returnTo)
 		return layout.Dimensions{Size: gtx.Constraints.Max}
+	}
+
+	refs := append(append([]string(nil), t.Links...), t.Files...)
+	if len(s.openBtns) != len(refs) {
+		s.openBtns = make([]widget.Clickable, len(refs))
+	}
+	for i := range s.openBtns {
+		if s.openBtns[i].Clicked(gtx) {
+			a.openAttachment(refs[i])
+		}
 	}
 
 	prio, hasPrio := a.state.Priority(a.mode, t.PriorityID)
@@ -151,7 +222,90 @@ func (s *taskViewScreen) details(gtx layout.Context, a *App, t model.Task, prioL
 			}
 			return a.th.label(unit.Sp(14), desc, c).Layout(gtx)
 		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if len(t.Links) == 0 {
+				return layout.Dimensions{}
+			}
+			return s.linksSection(gtx, a, t.Links)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if len(t.Files) == 0 {
+				return layout.Dimensions{}
+			}
+			return s.filesSection(gtx, a, t.Files, len(t.Links))
+		}),
 	)
+}
+
+// attachRow desenha uma linha de anexo: nome truncado e o botão "abrir".
+func (s *taskViewScreen) attachRow(gtx layout.Context, a *App, name string, btn int) layout.Dimensions {
+	return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx,
+		func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, a.th.label(unit.Sp(13), truncate(name, 26), colorInk).Layout),
+				layout.Rigid(spacerX(8).Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					if btn >= len(s.openBtns) {
+						return layout.Dimensions{}
+					}
+					return a.th.tiny("abrir").Layout(gtx, a.th, &s.openBtns[btn])
+				}),
+			)
+		})
+}
+
+// linksSection lista os links da tarefa.
+func (s *taskViewScreen) linksSection(gtx layout.Context, a *App, links []string) layout.Dimensions {
+	children := []layout.FlexChild{
+		layout.Rigid(spacerY(10).Layout),
+		layout.Rigid(separator),
+		layout.Rigid(spacerY(10).Layout),
+		layout.Rigid(a.th.small("Links").Layout),
+		layout.Rigid(spacerY(4).Layout),
+	}
+	for i, ref := range links {
+		i, ref := i, ref
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return s.attachRow(gtx, a, ref, i)
+		}))
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// filesSection lista os arquivos: imagens ganham preview dentro do app;
+// vídeos e outros formatos abrem no aplicativo padrão pelo "abrir".
+func (s *taskViewScreen) filesSection(gtx layout.Context, a *App, files []string, btnBase int) layout.Dimensions {
+	children := []layout.FlexChild{
+		layout.Rigid(spacerY(10).Layout),
+		layout.Rigid(separator),
+		layout.Rigid(spacerY(10).Layout),
+		layout.Rigid(a.th.small("Arquivos").Layout),
+		layout.Rigid(spacerY(4).Layout),
+	}
+	for i, path := range files {
+		i, path := i, path
+		name := filepath.Base(path)
+		if isVideoPath(path) {
+			name = name + " · vídeo"
+		}
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return s.attachRow(gtx, a, name, btnBase+i)
+		}))
+		if isImagePath(path) {
+			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				p := s.preview(path)
+				if !p.ok {
+					return a.th.label(unit.Sp(12), "não foi possível carregar a imagem", colorInkFaint).Layout(gtx)
+				}
+				return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(6)}.Layout(gtx,
+					func(gtx layout.Context) layout.Dimensions {
+						gtx.Constraints.Max.Y = gtx.Dp(unit.Dp(180))
+						return widget.Image{Src: p.op, Fit: widget.Contain, Position: layout.NW}.Layout(gtx)
+					})
+			}))
+		}
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
 // statLineColor é o statLine com cor própria no valor, para destacar prazos

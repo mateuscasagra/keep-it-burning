@@ -16,6 +16,7 @@ import (
 	"gioui.org/op"
 	"gioui.org/op/paint"
 	"gioui.org/unit"
+	"gioui.org/x/explorer"
 
 	"github.com/dvet/keep-it-burning/internal/model"
 	"github.com/dvet/keep-it-burning/internal/productivity"
@@ -59,6 +60,9 @@ type App struct {
 	screen screenID
 	tmr    *timer.Timer
 
+	// expl abre os diálogos nativos de escolher arquivo.
+	expl *explorer.Explorer
+
 	// startedAt é a referência da animação; o tempo do fogo é medido a partir
 	// da abertura do app.
 	startedAt time.Time
@@ -98,6 +102,7 @@ func New(win *app.Window, st *store.Store) (*App, error) {
 		startedAt: time.Now(),
 	}
 	a.tmr = timer.New(a.mode)
+	a.expl = explorer.NewExplorer(win)
 	a.dash.init(a)
 	a.form.init(a)
 	a.settings.init(a)
@@ -116,7 +121,11 @@ func (a *App) Run() error {
 
 	var ops op.Ops
 	for {
-		switch e := a.win.Event().(type) {
+		evt := a.win.Event()
+		// O explorer precisa ver os eventos da janela para ancorar os
+		// diálogos nativos de arquivo.
+		a.expl.ListenEvents(evt)
+		switch e := evt.(type) {
 		case app.DestroyEvent:
 			a.shutdown()
 			return e.Err
@@ -290,6 +299,13 @@ func (a *App) layoutNotice(gtx layout.Context) layout.Dimensions {
 // closeWindow fecha o aplicativo pelo botão X da tela inicial.
 func (a *App) closeWindow() {
 	a.win.Perform(system.ActionClose)
+}
+
+// openAttachment abre um anexo da tarefa e avisa no rodapé se falhar.
+func (a *App) openAttachment(ref string) {
+	if err := openExternal(ref); err != nil {
+		a.setError("Não foi possível abrir: " + err.Error())
+	}
 }
 
 // startUpdate dispara a recompilação em segundo plano; o resultado chega pelo

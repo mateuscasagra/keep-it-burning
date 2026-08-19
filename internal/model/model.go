@@ -68,6 +68,14 @@ type Task struct {
 	Description string    `json:"description"`
 	PriorityID  string    `json:"priorityId"`
 	CategoryID  string    `json:"categoryId,omitempty"`
+	// Links são endereços web anexados à tarefa; Files são caminhos de
+	// arquivos locais (imagens, vídeos, documentos). O app não copia os
+	// arquivos: guarda o caminho e visualiza ou abre a partir dele.
+	Links []string `json:"links,omitempty"`
+	Files []string `json:"files,omitempty"`
+	// Attachments é o campo antigo unificado; Normalize o migra para
+	// Links/Files ao carregar dados de versões anteriores.
+	Attachments []string `json:"attachments,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	DueAt       time.Time `json:"dueAt"`
 	// Today marca a tarefa como "tarefa do dia": ela aparece no painel lateral
@@ -76,6 +84,13 @@ type Task struct {
 	TodayAt time.Time `json:"todayat"`
 	Done    bool      `json:"done"`
 	DoneAt  time.Time `json:"doneAt"`
+}
+
+// IsLink informa se um anexo é um endereço web; caso contrário é tratado como
+// caminho de arquivo local.
+func IsLink(ref string) bool {
+	l := strings.ToLower(ref)
+	return strings.HasPrefix(l, "http://") || strings.HasPrefix(l, "https://")
 }
 
 // HasDue informa se a tarefa tem data limite definida.
@@ -202,6 +217,15 @@ func (s *State) Normalize() {
 		if !s.Tasks[i].Done {
 			s.Tasks[i].DoneAt = time.Time{}
 		}
+		// Migra o campo antigo Attachments (lista única) para Links/Files.
+		for _, ref := range s.Tasks[i].Attachments {
+			if IsLink(ref) {
+				s.Tasks[i].Links = append(s.Tasks[i].Links, ref)
+			} else {
+				s.Tasks[i].Files = append(s.Tasks[i].Files, ref)
+			}
+		}
+		s.Tasks[i].Attachments = nil
 	}
 }
 

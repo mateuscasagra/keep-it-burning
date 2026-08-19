@@ -2,6 +2,9 @@ package ui
 
 import (
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,6 +14,19 @@ import (
 
 	"github.com/dvet/keep-it-burning/internal/model"
 )
+
+// linkRow é um link em edição no formulário.
+type linkRow struct {
+	ref    widget.Editor
+	remove widget.Clickable
+}
+
+func newLinkRow(ref string) *linkRow {
+	r := &linkRow{}
+	r.ref.SingleLine = true
+	r.ref.SetText(ref)
+	return r
+}
 
 // taskFormScreen é a tela de criar/editar tarefa.
 type taskFormScreen struct {
@@ -27,6 +43,17 @@ type taskFormScreen struct {
 	categoryID   string
 	categoryBtns []widget.Clickable
 
+	links   []*linkRow
+	addLink widget.Clickable
+
+	files      []string
+	fileRemove []widget.Clickable
+	addFile    widget.Clickable
+	// fileCh recebe o caminho escolhido no diálogo nativo, que roda em outra
+	// goroutine; picking evita abrir dois diálogos ao mesmo tempo.
+	fileCh  chan string
+	picking bool
+
 	today widget.Bool
 
 	save   widget.Clickable
@@ -40,6 +67,7 @@ func (s *taskFormScreen) init(a *App) {
 	s.title.Submit = true
 	s.due.SingleLine = true
 	s.desc.SingleLine = false
+	s.fileCh = make(chan string, 1)
 }
 
 // openNew prepara o formulário para uma tarefa nova.
@@ -59,6 +87,8 @@ func (s *taskFormScreen) openNew(a *App) {
 		s.priorityID = prios[0].ID
 	}
 	s.categoryID = ""
+	s.links = nil
+	s.files = nil
 	s.syncPriorityButtons(a)
 	s.syncCategoryButtons(a)
 }
@@ -72,6 +102,11 @@ func (s *taskFormScreen) openEdit(a *App, t model.Task) {
 	s.today.Value = t.Today
 	s.priorityID = t.PriorityID
 	s.categoryID = t.CategoryID
+	s.links = make([]*linkRow, 0, len(t.Links))
+	for _, ref := range t.Links {
+		s.links = append(s.links, newLinkRow(ref))
+	}
+	s.files = append([]string(nil), t.Files...)
 	s.err = ""
 	s.syncPriorityButtons(a)
 	s.syncCategoryButtons(a)
@@ -117,6 +152,36 @@ func (s *taskFormScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	}
 	if s.cancel.Clicked(gtx) {
 		a.goTo(screenDashboard)
+	}
+	if s.addLink.Clicked(gtx) {
+		s.links = append(s.links, newLinkRow(""))
+	}
+	for i := len(s.links) - 1; i >= 0; i-- {
+		if s.links[i].remove.Clicked(gtx) {
+			s.links = append(s.links[:i], s.links[i+1:]...)
+		}
+	}
+	// O caminho escolhido no diálogo chega pelo canal; a tela redesenha a
+	// cada quadro, então basta drenar sem bloquear.
+	select {
+	case path := <-s.fileCh:
+		s.picking = false
+		if path != "" {
+			s.files = append(s.files, path)
+		}
+	default:
+	}
+	if s.addFile.Clicked(gtx) && !s.picking {
+		s.picking = true
+		go s.pickFile(a)
+	}
+	if len(s.fileRemove) != len(s.files) {
+		s.fileRemove = make([]widget.Clickable, len(s.files))
+	}
+	for i := len(s.files) - 1; i >= 0; i-- {
+		if s.fileRemove[i].Clicked(gtx) {
+			s.files = append(s.files[:i], s.files[i+1:]...)
+		}
 	}
 	// Enter no título salva, como em qualquer formulário curto.
 	submitted := false
@@ -199,6 +264,18 @@ func (s *taskFormScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 					)
 				}),
 				layout.Rigid(spacerY(14).Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Alignment: layout.Start}.Layout(gtx,
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							return s.linksField(gtx, a)
+						}),
+						layout.Rigid(spacerX(16).Layout),
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							return s.filesField(gtx, a)
+						}),
+					)
+				}),
+				layout.Rigid(spacerY(14).Layout),
 				layout.Rigid(a.th.small("Resumo da tarefa").Layout),
 				layout.Rigid(spacerY(4).Layout),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
@@ -277,6 +354,111 @@ func (s *taskFormScreen) categoryField(gtx layout.Context, a *App, cats []model.
 	)
 }
 
+// linksField edita a lista de links da tarefa.
+func (s *taskFormScreen) linksField(gtx layout.Context, a *App) layout.Dimensions {
+	children := []layout.FlexChild{
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.th.small("Links").Layout),
+				layout.Rigid(spacerX(10).Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.th.tiny("+ adicionar link").Layout(gtx, a.th, &s.addLink)
+				}),
+			)
+		}),
+	}
+	for _, r := range s.links {
+		r := r
+		children = append(children,
+			layout.Rigid(spacerY(6).Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						return a.th.editorBox(gtx, &r.ref, "https://exemplo.com", unit.Dp(0))
+					}),
+					layout.Rigid(spacerX(8).Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						b := a.th.tiny("remover")
+						b.Fg = colorDanger
+						return b.Layout(gtx, a.th, &r.remove)
+					}),
+				)
+			}),
+		)
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// filesField lista os arquivos anexados; o "+ adicionar arquivo" abre o
+// diálogo nativo do sistema para escolher.
+func (s *taskFormScreen) filesField(gtx layout.Context, a *App) layout.Dimensions {
+	label := "+ adicionar arquivo"
+	if s.picking {
+		label = "escolhendo…"
+	}
+	children := []layout.FlexChild{
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.th.small("Arquivos").Layout),
+				layout.Rigid(spacerX(10).Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.th.tiny(label).Layout(gtx, a.th, &s.addFile)
+				}),
+			)
+		}),
+	}
+	for i, path := range s.files {
+		i, path := i, path
+		children = append(children,
+			layout.Rigid(spacerY(6).Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Flexed(1, a.th.label(unit.Sp(14), truncate(filepath.Base(path), 34), colorInk).Layout),
+					layout.Rigid(spacerX(8).Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if i >= len(s.fileRemove) {
+							return layout.Dimensions{}
+						}
+						b := a.th.tiny("remover")
+						b.Fg = colorDanger
+						return b.Layout(gtx, a.th, &s.fileRemove[i])
+					}),
+				)
+			}),
+		)
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+}
+
+// pickFile roda em goroutine própria: o diálogo nativo é bloqueante e não
+// pode segurar o laço de desenho. O resultado volta pelo canal.
+func (s *taskFormScreen) pickFile(a *App) {
+	rc, err := a.expl.ChooseFile()
+	path := ""
+	if err == nil {
+		path = fileDialogPath(rc)
+		rc.Close()
+	}
+	s.fileCh <- path
+	a.win.Invalidate()
+}
+
+// fileDialogPath extrai o caminho local do arquivo devolvido pelo diálogo.
+func fileDialogPath(rc io.ReadCloser) string {
+	switch f := rc.(type) {
+	case *os.File:
+		return f.Name()
+	case interface{ URI() string }:
+		u := strings.TrimPrefix(f.URI(), "file://")
+		// URIs no Windows vêm como /C:/pasta/arquivo; o barra inicial sobra.
+		if len(u) > 2 && u[0] == '/' && u[2] == ':' {
+			u = u[1:]
+		}
+		return filepath.FromSlash(u)
+	}
+	return ""
+}
+
 // commit valida e grava o formulário. Devolve true se conseguiu salvar.
 func (s *taskFormScreen) commit(a *App) bool {
 	title := strings.TrimSpace(s.title.Text())
@@ -301,6 +483,8 @@ func (s *taskFormScreen) commit(a *App) bool {
 		Description: strings.TrimSpace(s.desc.Text()),
 		PriorityID:  s.priorityID,
 		CategoryID:  s.categoryID,
+		Links:       s.collectLinks(),
+		Files:       append([]string(nil), s.files...),
 		DueAt:       due,
 		Today:       s.today.Value,
 	}
@@ -328,6 +512,17 @@ func (s *taskFormScreen) commit(a *App) bool {
 	s.err = ""
 	a.save()
 	return true
+}
+
+// collectLinks junta os links preenchidos, descartando linhas vazias.
+func (s *taskFormScreen) collectLinks() []string {
+	var out []string
+	for _, r := range s.links {
+		if ref := strings.TrimSpace(r.ref.Text()); ref != "" {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 // checkboxStatic desenha uma caixinha sem clique próprio, para uso dentro de
