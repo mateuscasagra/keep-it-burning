@@ -408,9 +408,13 @@ func TestPeriodLabel(t *testing.T) {
 
 func TestTaskStatsForSeparaPrioridadesEPontualidade(t *testing.T) {
 	st := stateFixture()
+	cfg := st.SettingsFor(model.ModeWork)
+	cfg.Categories = []model.Category{{ID: "reuniao", Title: "Reunião"}}
+	st.SetSettings(model.ModeWork, cfg)
 	st.Tasks = []model.Task{
-		// Entregues no dia 5: uma alta no prazo, uma média atrasada.
-		{ID: "alta-ok", Mode: model.ModeWork, PriorityID: "alta", Done: true,
+		// Entregues no dia 5: uma alta no prazo (categoria Reunião), uma média
+		// atrasada sem categoria.
+		{ID: "alta-ok", Mode: model.ModeWork, PriorityID: "alta", CategoryID: "reuniao", Done: true,
 			CreatedAt: at(3, 9, 0), DueAt: at(5, 18, 0), DoneAt: at(5, 12, 0)},
 		{ID: "media-atrasada", Mode: model.ModeWork, PriorityID: "media", Done: true,
 			CreatedAt: at(4, 9, 0), DueAt: at(4, 18, 0), DoneAt: at(5, 10, 0)},
@@ -450,6 +454,21 @@ func TestTaskStatsForSeparaPrioridadesEPontualidade(t *testing.T) {
 	// Entregas: alta levou 51h, média levou 25h → média de 38h.
 	if want := 38 * time.Hour; ts.AvgDelivery != want {
 		t.Errorf("AvgDelivery = %v, quero %v", ts.AvgDelivery, want)
+	}
+	// Categorias: Reunião tem a entrega alta-ok; o resto cai em Sem categoria.
+	wantCats := map[string][2]int{"Reunião": {1, 0}, "Sem categoria": {1, 3}}
+	if len(ts.Categories) != len(wantCats) {
+		t.Fatalf("categorias = %d linhas, quero %d", len(ts.Categories), len(wantCats))
+	}
+	for _, l := range ts.Categories {
+		w, ok := wantCats[l.Label]
+		if !ok {
+			t.Errorf("categoria inesperada: %q", l.Label)
+			continue
+		}
+		if l.Done != w[0] || l.Open != w[1] {
+			t.Errorf("%s: done=%d open=%d, quero %d e %d", l.Label, l.Done, l.Open, w[0], w[1])
+		}
 	}
 }
 

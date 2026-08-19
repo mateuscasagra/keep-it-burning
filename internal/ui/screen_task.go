@@ -24,6 +24,9 @@ type taskFormScreen struct {
 	priorityID   string
 	priorityBtns []widget.Clickable
 
+	categoryID   string
+	categoryBtns []widget.Clickable
+
 	today widget.Bool
 
 	save   widget.Clickable
@@ -55,7 +58,9 @@ func (s *taskFormScreen) openNew(a *App) {
 	if len(prios) > 0 {
 		s.priorityID = prios[0].ID
 	}
+	s.categoryID = ""
 	s.syncPriorityButtons(a)
+	s.syncCategoryButtons(a)
 }
 
 // openEdit carrega uma tarefa existente no formulário.
@@ -66,8 +71,10 @@ func (s *taskFormScreen) openEdit(a *App, t model.Task) {
 	s.desc.SetText(t.Description)
 	s.today.Value = t.Today
 	s.priorityID = t.PriorityID
+	s.categoryID = t.CategoryID
 	s.err = ""
 	s.syncPriorityButtons(a)
+	s.syncCategoryButtons(a)
 }
 
 // syncPriorityButtons garante um botão por prioridade configurada.
@@ -78,13 +85,34 @@ func (s *taskFormScreen) syncPriorityButtons(a *App) {
 	}
 }
 
+// syncCategoryButtons garante um botão por categoria, mais o "Nenhuma" na
+// posição zero — categoria é opcional.
+func (s *taskFormScreen) syncCategoryButtons(a *App) {
+	n := len(a.state.SettingsFor(a.mode).Categories) + 1
+	if len(s.categoryBtns) != n {
+		s.categoryBtns = make([]widget.Clickable, n)
+	}
+}
+
 func (s *taskFormScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	s.syncPriorityButtons(a)
-	prios := a.state.SettingsFor(a.mode).Priorities
+	s.syncCategoryButtons(a)
+	cfg := a.state.SettingsFor(a.mode)
+	prios, cats := cfg.Priorities, cfg.Categories
 
 	for i := range s.priorityBtns {
 		if s.priorityBtns[i].Clicked(gtx) && i < len(prios) {
 			s.priorityID = prios[i].ID
+		}
+	}
+	for i := range s.categoryBtns {
+		if !s.categoryBtns[i].Clicked(gtx) {
+			continue
+		}
+		if i == 0 {
+			s.categoryID = ""
+		} else if i-1 < len(cats) {
+			s.categoryID = cats[i-1].ID
 		}
 	}
 	if s.cancel.Clicked(gtx) {
@@ -147,6 +175,17 @@ func (s *taskFormScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 						}),
 					)
 				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					// O campo só aparece quando o modo tem categorias criadas
+					// nas configurações; sem elas, a tarefa fica sem categoria.
+					if len(cats) == 0 {
+						return layout.Dimensions{}
+					}
+					return layout.Inset{Top: unit.Dp(12)}.Layout(gtx,
+						func(gtx layout.Context) layout.Dimensions {
+							return s.categoryField(gtx, a, cats)
+						})
+				}),
 				layout.Rigid(spacerY(12).Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -208,6 +247,36 @@ func (s *taskFormScreen) priorityField(gtx layout.Context, a *App, prios []model
 	)
 }
 
+// categoryField desenha as categorias como botões selecionáveis, com o
+// "Nenhuma" na frente porque categoria é opcional.
+func (s *taskFormScreen) categoryField(gtx layout.Context, a *App, cats []model.Category) layout.Dimensions {
+	catBtn := func(i int, id, title string) layout.FlexChild {
+		return layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			b := a.th.button(title)
+			b.Size, b.PadX, b.PadY = unit.Sp(13), unit.Dp(12), unit.Dp(7)
+			b.Radius = unit.Dp(9)
+			if id == s.categoryID {
+				b.Bg = colorInk
+				b.Fg = colorPaper
+				b.Emphasis = true
+			}
+			return b.Layout(gtx, a.th, &s.categoryBtns[i])
+		})
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.th.small("Categoria").Layout),
+		layout.Rigid(spacerY(6).Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			children := make([]layout.FlexChild, 0, (len(cats)+1)*2)
+			children = append(children, catBtn(0, "", "Nenhuma"), layout.Rigid(spacerX(6).Layout))
+			for i, c := range cats {
+				children = append(children, catBtn(i+1, c.ID, c.Title), layout.Rigid(spacerX(6).Layout))
+			}
+			return layout.Flex{}.Layout(gtx, children...)
+		}),
+	)
+}
+
 // commit valida e grava o formulário. Devolve true se conseguiu salvar.
 func (s *taskFormScreen) commit(a *App) bool {
 	title := strings.TrimSpace(s.title.Text())
@@ -231,6 +300,7 @@ func (s *taskFormScreen) commit(a *App) bool {
 		Title:       title,
 		Description: strings.TrimSpace(s.desc.Text()),
 		PriorityID:  s.priorityID,
+		CategoryID:  s.categoryID,
 		DueAt:       due,
 		Today:       s.today.Value,
 	}

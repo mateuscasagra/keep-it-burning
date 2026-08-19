@@ -221,35 +221,32 @@ func (s *statsScreen) indicatorsPanel(gtx layout.Context, a *App, rep productivi
 	})
 }
 
-// tasksPanel é a visão só de tarefas: distribuição por prioridade,
-// pontualidade e tempo de entrega.
+// tasksPanel é a visão só de tarefas: distribuição por prioridade e por
+// categoria, pontualidade e tempo de entrega.
 func (s *statsScreen) tasksPanel(gtx layout.Context, a *App) layout.Dimensions {
 	ts := productivity.TaskStatsFor(a.state, a.mode, s.period, time.Now())
+	hasCats := len(a.state.SettingsFor(a.mode).Categories) > 0
 
 	return a.th.panelFill(gtx, unit.Dp(16), func(gtx layout.Context) layout.Dimensions {
 		gtx.Constraints.Min.X = gtx.Constraints.Max.X
 		children := []layout.FlexChild{
-			layout.Rigid(a.th.heading("Tarefas por prioridade").Layout),
-			layout.Rigid(spacerY(10).Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return taskTableRow(gtx, a.th, "Prioridade", "Entregues", "Em aberto", colorInkSoft)
-			}),
-			layout.Rigid(spacerY(4).Layout),
-			layout.Rigid(separator),
-			layout.Rigid(spacerY(4).Layout),
-		}
-		for _, line := range ts.Lines {
-			line := line
-			children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return taskTableRow(gtx, a.th, line.Label, itoa(line.Done), itoa(line.Open), colorInk)
-			}))
-		}
-		children = append(children,
-			layout.Rigid(spacerY(4).Layout),
-			layout.Rigid(separator),
-			layout.Rigid(spacerY(4).Layout),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return taskTableRow(gtx, a.th, "Total", itoa(ts.DoneCount), itoa(ts.OpenCount), colorInk)
+				return layout.Flex{Alignment: layout.Start}.Layout(gtx,
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						return taskTable(gtx, a.th, "Por prioridade", "Prioridade", ts.Lines, ts.DoneCount, ts.OpenCount)
+					}),
+					layout.Rigid(spacerX(28).Layout),
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						if !hasCats {
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Rigid(a.th.heading("Por categoria").Layout),
+								layout.Rigid(spacerY(10).Layout),
+								layout.Rigid(a.th.small("Crie categorias nas Configurações para fatiar as tarefas aqui.").Layout),
+							)
+						}
+						return taskTable(gtx, a.th, "Por categoria", "Categoria", ts.Categories, ts.DoneCount, ts.OpenCount)
+					}),
+				)
 			}),
 			layout.Rigid(spacerY(16).Layout),
 			layout.Rigid(a.th.heading("Prazos e entrega").Layout),
@@ -274,9 +271,39 @@ func (s *statsScreen) tasksPanel(gtx layout.Context, a *App) layout.Dimensions {
 			layout.Rigid(a.th.label(unit.Sp(11),
 				"Entregues contam no "+labelForPeriod(s.period)+" selecionado; em aberto é o total atual do modo.",
 				colorInkFaint).Layout),
-		)
+		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 	})
+}
+
+// taskTable desenha uma tabela entregues/em aberto com linha de total; serve
+// tanto para prioridades quanto para categorias.
+func taskTable(gtx layout.Context, th *Theme, title, firstCol string, lines []productivity.PriorityLine, doneTotal, openTotal int) layout.Dimensions {
+	children := []layout.FlexChild{
+		layout.Rigid(th.heading(title).Layout),
+		layout.Rigid(spacerY(10).Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return taskTableRow(gtx, th, firstCol, "Entregues", "Em aberto", colorInkSoft)
+		}),
+		layout.Rigid(spacerY(4).Layout),
+		layout.Rigid(separator),
+		layout.Rigid(spacerY(4).Layout),
+	}
+	for _, line := range lines {
+		line := line
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return taskTableRow(gtx, th, line.Label, itoa(line.Done), itoa(line.Open), colorInk)
+		}))
+	}
+	children = append(children,
+		layout.Rigid(spacerY(4).Layout),
+		layout.Rigid(separator),
+		layout.Rigid(spacerY(4).Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return taskTableRow(gtx, th, "Total", itoa(doneTotal), itoa(openTotal), colorInk)
+		}),
+	)
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
 
 // taskTableRow desenha uma linha da tabela de prioridades em três colunas.

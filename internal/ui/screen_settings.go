@@ -23,27 +23,46 @@ type priorityRow struct {
 	remove widget.Clickable
 }
 
-// settingsScreen edita as prioridades e as metas de tempo do modo atual.
+// categoryRow são os campos de uma categoria na tela de configuração.
+type categoryRow struct {
+	id     string
+	title  widget.Editor
+	remove widget.Clickable
+}
+
+func newCategoryRow(c model.Category) *categoryRow {
+	r := &categoryRow{id: c.ID}
+	r.title.SingleLine = true
+	r.title.SetText(c.Title)
+	return r
+}
+
+// settingsScreen edita as prioridades, as categorias e as metas de tempo do
+// modo atual.
 type settingsScreen struct {
 	rows []*priorityRow
+	cats []*categoryRow
 
 	daily  widget.Editor
 	weekly widget.Editor
 
 	add    widget.Clickable
+	addCat widget.Clickable
 	save   widget.Clickable
 	back   widget.Clickable
 	toWork widget.Clickable
 	toStud widget.Clickable
 
-	list widget.List
-	err  string
+	list    widget.List
+	catList widget.List
+	err     string
 }
 
 func (s *settingsScreen) init(a *App) {
 	s.daily.SingleLine = true
 	s.weekly.SingleLine = true
 	s.list.Axis = layout.Vertical
+	s.catList.Axis = layout.Vertical
 }
 
 // load traz para os campos a configuração atual do modo.
@@ -53,6 +72,10 @@ func (s *settingsScreen) load(a *App) {
 	s.rows = make([]*priorityRow, 0, len(cfg.Priorities))
 	for _, p := range cfg.Priorities {
 		s.rows = append(s.rows, newPriorityRow(p))
+	}
+	s.cats = make([]*categoryRow, 0, len(cfg.Categories))
+	for _, c := range cfg.Categories {
+		s.cats = append(s.cats, newCategoryRow(c))
 	}
 	s.daily.SetText(formatDurationInput(cfg.DailyTarget))
 	s.weekly.SetText(formatDurationInput(cfg.WeeklyTarget))
@@ -75,6 +98,9 @@ func (s *settingsScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if s.add.Clicked(gtx) {
 		s.rows = append(s.rows, newPriorityRow(model.Priority{ID: model.NewID(), Title: "", Value: 1}))
 	}
+	if s.addCat.Clicked(gtx) {
+		s.cats = append(s.cats, newCategoryRow(model.Category{ID: model.NewID()}))
+	}
 	if s.toWork.Clicked(gtx) && a.mode != model.ModeWork {
 		a.setMode(model.ModeWork)
 		s.load(a)
@@ -86,6 +112,11 @@ func (s *settingsScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	for i := len(s.rows) - 1; i >= 0; i-- {
 		if s.rows[i].remove.Clicked(gtx) {
 			s.rows = append(s.rows[:i], s.rows[i+1:]...)
+		}
+	}
+	for i := len(s.cats) - 1; i >= 0; i-- {
+		if s.cats[i].remove.Clicked(gtx) {
+			s.cats = append(s.cats[:i], s.cats[i+1:]...)
 		}
 	}
 	if s.save.Clicked(gtx) {
@@ -110,8 +141,16 @@ func (s *settingsScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 						}),
 						layout.Rigid(spacerX(16).Layout),
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
-							return s.targetsPanel(gtx, a)
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+									gtx.Constraints.Min.Y = gtx.Constraints.Max.Y
+									return s.categoriesPanel(gtx, a)
+								}),
+								layout.Rigid(spacerY(16).Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return s.targetsPanel(gtx, a)
+								}),
+							)
 						}),
 					)
 				}),
@@ -234,6 +273,57 @@ func (s *settingsScreen) priorityRowLayout(gtx layout.Context, a *App, r *priori
 		})
 }
 
+// categoriesPanel lista as categorias editáveis do modo.
+func (s *settingsScreen) categoriesPanel(gtx layout.Context, a *App) layout.Dimensions {
+	return a.th.panelFill(gtx, unit.Dp(14), func(gtx layout.Context) layout.Dimensions {
+		gtx.Constraints.Min.X = gtx.Constraints.Max.X
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(a.th.heading("Categorias").Layout),
+					layout.Flexed(1, layout.Spacer{}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						b := a.th.button("+ Adicionar")
+						b.Size, b.PadX, b.PadY = unit.Sp(13), unit.Dp(13), unit.Dp(6)
+						b.Radius = unit.Dp(9)
+						return b.Layout(gtx, a.th, &s.addCat)
+					}),
+				)
+			}),
+			layout.Rigid(spacerY(4).Layout),
+			layout.Rigid(a.th.small("Categorias classificam as tarefas e fatiam os relatórios (ex.: reunião, projeto).").Layout),
+			layout.Rigid(spacerY(12).Layout),
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				if len(s.cats) == 0 {
+					return a.th.small("Sem categorias. Elas são opcionais.").Layout(gtx)
+				}
+				return material.List(a.th.Theme, &s.catList).Layout(gtx, len(s.cats),
+					func(gtx layout.Context, i int) layout.Dimensions {
+						return s.categoryRowLayout(gtx, a, s.cats[i])
+					})
+			}),
+		)
+	})
+}
+
+func (s *settingsScreen) categoryRowLayout(gtx layout.Context, a *App, r *categoryRow) layout.Dimensions {
+	return layout.Inset{Bottom: unit.Dp(8), Right: unit.Dp(4)}.Layout(gtx,
+		func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return a.th.editorBox(gtx, &r.title, "Reunião", unit.Dp(0))
+				}),
+				layout.Rigid(spacerX(10).Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					gtx.Constraints.Min.X = gtx.Dp(removeColumnWidth)
+					b := a.th.tiny("remover")
+					b.Fg = colorDanger
+					return b.Layout(gtx, a.th, &r.remove)
+				}),
+			)
+		})
+}
+
 // targetsPanel edita o tempo médio diário e semanal.
 func (s *settingsScreen) targetsPanel(gtx layout.Context, a *App) layout.Dimensions {
 	return a.th.panelFill(gtx, unit.Dp(14), func(gtx layout.Context) layout.Dimensions {
@@ -289,6 +379,24 @@ func (s *settingsScreen) commit(a *App) bool {
 		return false
 	}
 
+	// Categorias são opcionais, mas as que existirem precisam de título único.
+	cats := make([]model.Category, 0, len(s.cats))
+	seenCat := map[string]bool{}
+	for _, r := range s.cats {
+		title := strings.TrimSpace(r.title.Text())
+		if title == "" {
+			s.err = "Toda categoria precisa de um título."
+			return false
+		}
+		key := strings.ToLower(title)
+		if seenCat[key] {
+			s.err = "Há duas categorias com o título “" + title + "”."
+			return false
+		}
+		seenCat[key] = true
+		cats = append(cats, model.Category{ID: r.id, Title: title})
+	}
+
 	daily, err := parseDurationInput(s.daily.Text())
 	if err != nil {
 		s.err = "Tempo diário: " + err.Error()
@@ -310,6 +418,7 @@ func (s *settingsScreen) commit(a *App) bool {
 
 	a.state.SetSettings(a.mode, model.ModeSettings{
 		Priorities:   prios,
+		Categories:   cats,
 		DailyTarget:  daily,
 		WeeklyTarget: weekly,
 	})

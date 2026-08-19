@@ -54,6 +54,10 @@ func (s *taskViewScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if hasPrio {
 		prioLabel = prio.Title + " · " + itoa(prio.Value)
 	}
+	catLabel := "—"
+	if cat, ok := a.state.Category(a.mode, t.CategoryID); ok {
+		catLabel = cat.Title
+	}
 
 	dueColor := colorInk
 	if t.Overdue(time.Now()) {
@@ -90,7 +94,7 @@ func (s *taskViewScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 					return material.List(a.th.Theme, &s.list).Layout(gtx, 1,
 						func(gtx layout.Context, _ int) layout.Dimensions {
-							return s.details(gtx, a, t, prioLabel, dueColor)
+							return s.details(gtx, a, t, prioLabel, catLabel, dueColor)
 						})
 				}),
 				layout.Rigid(spacerY(10).Layout),
@@ -109,7 +113,7 @@ func (s *taskViewScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 }
 
 // details é o corpo rolável da visualização: título, datas e o resumo.
-func (s *taskViewScreen) details(gtx layout.Context, a *App, t model.Task, prioLabel string, dueColor color.NRGBA) layout.Dimensions {
+func (s *taskViewScreen) details(gtx layout.Context, a *App, t model.Task, prioLabel, catLabel string, dueColor color.NRGBA) layout.Dimensions {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.th.label(unit.Sp(19), t.Title, colorInk).Layout),
 		layout.Rigid(spacerY(4).Layout),
@@ -117,6 +121,9 @@ func (s *taskViewScreen) details(gtx layout.Context, a *App, t model.Task, prioL
 		layout.Rigid(spacerY(12).Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return statLine(gtx, a.th, "Prioridade", prioLabel)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return statLine(gtx, a.th, "Categoria", catLabel)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return statLineColor(gtx, a.th, "Data incluída", formatDateTime(t.CreatedAt), colorInk)

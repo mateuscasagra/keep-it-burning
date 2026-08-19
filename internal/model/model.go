@@ -52,6 +52,14 @@ type Priority struct {
 	Value int    `json:"value"`
 }
 
+// Category é uma categoria de tarefa configurável (ex.: "Reunião", "Projeto").
+// Diferente da prioridade, ela não pesa no score: existe para fatiar os
+// relatórios por tipo de tarefa.
+type Category struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
 // Task é uma tarefa de trabalho ou estudo.
 type Task struct {
 	ID          string    `json:"id"`
@@ -59,6 +67,7 @@ type Task struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
 	PriorityID  string    `json:"priorityId"`
+	CategoryID  string    `json:"categoryId,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	DueAt       time.Time `json:"dueAt"`
 	// Today marca a tarefa como "tarefa do dia": ela aparece no painel lateral
@@ -98,7 +107,9 @@ func (s Session) Duration() time.Duration {
 // DailyTarget e WeeklyTarget são o "tempo médio diário/semanal" da tela de
 // configuração: são as metas contra as quais o tempo cronometrado é comparado.
 type ModeSettings struct {
-	Priorities   []Priority    `json:"priorities"`
+	Priorities []Priority `json:"priorities"`
+	// Categories começa vazio: o usuário cria as suas na tela de configuração.
+	Categories   []Category    `json:"categories,omitempty"`
 	DailyTarget  time.Duration `json:"dailyTarget"`
 	WeeklyTarget time.Duration `json:"weeklyTarget"`
 }
@@ -218,6 +229,16 @@ func (s *State) Priority(m Mode, id string) (Priority, bool) {
 		}
 	}
 	return Priority{}, false
+}
+
+// Category procura uma categoria pelo ID dentro de um modo.
+func (s *State) Category(m Mode, id string) (Category, bool) {
+	for _, c := range s.SettingsFor(m).Categories {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return Category{}, false
 }
 
 // PriorityValue devolve o peso de uma prioridade. Uma prioridade removida da

@@ -346,6 +346,9 @@ type PriorityLine struct {
 // do recorte de datas.
 type TaskStats struct {
 	Lines []PriorityLine
+	// Categories é a mesma tabela fatiada pelas categorias configuradas, com
+	// uma linha "Sem categoria" para as tarefas não classificadas.
+	Categories []PriorityLine
 
 	DoneCount int
 	OpenCount int
@@ -398,10 +401,28 @@ func TaskStatsFor(st *model.State, mode model.Mode, p Period, ref time.Time) Tas
 		return &stats.Lines[other]
 	}
 
+	catIndex := map[string]int{}
+	for _, c := range st.SettingsFor(mode).Categories {
+		catIndex[c.ID] = len(stats.Categories)
+		stats.Categories = append(stats.Categories, PriorityLine{Label: c.Title})
+	}
+	catOther := -1
+	catLine := func(id string) *PriorityLine {
+		if i, ok := catIndex[id]; ok {
+			return &stats.Categories[i]
+		}
+		if catOther < 0 {
+			catOther = len(stats.Categories)
+			stats.Categories = append(stats.Categories, PriorityLine{Label: "Sem categoria"})
+		}
+		return &stats.Categories[catOther]
+	}
+
 	var deliverySum time.Duration
 	var deliveryN int
 	for _, t := range done {
 		line(t.PriorityID).Done++
+		catLine(t.CategoryID).Done++
 		if t.HasDue() {
 			stats.DoneWithDue++
 			if t.DoneAt.After(t.DueAt) {
@@ -415,6 +436,7 @@ func TaskStatsFor(st *model.State, mode model.Mode, p Period, ref time.Time) Tas
 	}
 	for _, t := range open {
 		line(t.PriorityID).Open++
+		catLine(t.CategoryID).Open++
 		switch {
 		case !t.HasDue():
 			stats.NoDueOpen++
