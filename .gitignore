@@ -1,6 +1,7 @@
 # Executáveis
 *.exe
 *.exe~
+*.exe.old
 KeepItBurning.exe
 keep-it-burning
 

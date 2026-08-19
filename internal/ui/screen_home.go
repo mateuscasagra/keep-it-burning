@@ -12,14 +12,18 @@ import (
 // homeScreen é a tela de abertura: a fogueira grande e a escolha entre
 // trabalho e estudo.
 type homeScreen struct {
-	work  widget.Clickable
-	study widget.Clickable
-	close widget.Clickable
+	work   widget.Clickable
+	study  widget.Clickable
+	close  widget.Clickable
+	update widget.Clickable
 }
 
 func (s *homeScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if s.close.Clicked(gtx) {
 		a.closeWindow()
+	}
+	if s.update.Clicked(gtx) {
+		a.startUpdate()
 	}
 	if s.work.Clicked(gtx) {
 		a.setMode(model.ModeWork)
@@ -52,6 +56,28 @@ func (s *homeScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 						b.Radius = unit.Dp(9)
 						return b.Layout(gtx, a.th, &s.close)
 					})
+				}),
+				// O Atualizar recompila o código e reabre o app: atalho de
+				// desenvolvimento para não buildar na mão a cada mudança.
+				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+					gtx.Constraints.Min = gtx.Constraints.Max
+					return layout.NW.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						label := "Atualizar"
+						if a.updating {
+							label = "Atualizando…"
+						}
+						b := a.th.button(label)
+						b.PadX, b.PadY = unit.Dp(12), unit.Dp(6)
+						b.Size = unit.Sp(14)
+						b.Radius = unit.Dp(9)
+						return b.Layout(gtx, a.th, &s.update)
+					})
+				}),
+				// O rodapé mostra o resultado da atualização (erro de build ou
+				// confirmação), que sem isso ficaria invisível nesta tela.
+				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+					gtx.Constraints.Min = gtx.Constraints.Max
+					return layout.S.Layout(gtx, a.layoutNotice)
 				}),
 			)
 		})

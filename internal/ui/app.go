@@ -6,6 +6,8 @@ package ui
 import (
 	"image"
 	"log"
+	"os/exec"
+	"path/filepath"
 	"time"
 
 	"gioui.org/app"
@@ -65,6 +67,11 @@ type App struct {
 	notice    string
 	noticeErr bool
 	noticeAt  time.Time
+
+	// updateCh recebe o resultado da recompilação disparada pelo botão
+	// Atualizar; nil quando não há atualização em andamento.
+	updateCh chan updateResult
+	updating bool
 
 	home     homeScreen
 	dash     dashboardScreen
@@ -139,6 +146,7 @@ func (a *App) shutdown() {
 // layout desenha a tela ativa sobre o fundo de papel.
 func (a *App) layout(gtx layout.Context) layout.Dimensions {
 	paint.Fill(gtx.Ops, colorPaper)
+	a.pollUpdate()
 
 	switch a.screen {
 	case screenHome:
@@ -282,6 +290,57 @@ func (a *App) layoutNotice(gtx layout.Context) layout.Dimensions {
 // closeWindow fecha o aplicativo pelo botão X da tela inicial.
 func (a *App) closeWindow() {
 	a.win.Perform(system.ActionClose)
+}
+
+// startUpdate dispara a recompilação em segundo plano; o resultado chega pelo
+// canal e é tratado em pollUpdate, para a interface não congelar no build.
+func (a *App) startUpdate() {
+	if a.updating {
+		return
+	}
+	root, err := projectRoot()
+	if err != nil {
+		a.setError(err.Error())
+		return
+	}
+	a.updating = true
+	a.setInfo("Recompilando o app…")
+	ch := make(chan updateResult, 1)
+	a.updateCh = ch
+	go func() {
+		exe, err := rebuild(root)
+		ch <- updateResult{exe: exe, err: err}
+	}()
+}
+
+// pollUpdate confere a cada quadro se a recompilação terminou. No sucesso,
+// salva o estado, lança o binário novo e fecha esta instância.
+func (a *App) pollUpdate() {
+	if a.updateCh == nil {
+		return
+	}
+	select {
+	case res := <-a.updateCh:
+		a.updateCh = nil
+		a.updating = false
+		if res.err != nil {
+			a.setError(res.err.Error())
+			return
+		}
+		// O estado vai para o disco antes de o app novo abrir e carregá-lo.
+		for _, s := range a.tmr.Stop() {
+			a.state.AddSession(s)
+		}
+		a.save()
+		cmd := exec.Command(res.exe)
+		cmd.Dir = filepath.Dir(res.exe)
+		if err := cmd.Start(); err != nil {
+			a.setError("Build ok, mas não consegui reabrir o app: " + err.Error())
+			return
+		}
+		a.closeWindow()
+	default:
+	}
 }
 
 // toggleDone marca ou desmarca a conclusão de uma tarefa e salva na hora — é
