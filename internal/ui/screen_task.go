@@ -35,7 +35,10 @@ type taskFormScreen struct {
 
 	title widget.Editor
 	due   widget.Editor
-	desc  widget.Editor
+	// dueLast é o texto do prazo no quadro anterior, usado pela máscara que
+	// formata a data enquanto o usuário digita.
+	dueLast string
+	desc    widget.Editor
 
 	priorityID   string
 	priorityBtns []widget.Clickable
@@ -75,6 +78,7 @@ func (s *taskFormScreen) openNew(a *App) {
 	s.editing = ""
 	s.title.SetText("")
 	s.due.SetText("")
+	s.dueLast = ""
 	s.desc.SetText("")
 	s.today.Value = false
 	s.err = ""
@@ -98,6 +102,7 @@ func (s *taskFormScreen) openEdit(a *App, t model.Task) {
 	s.editing = t.ID
 	s.title.SetText(t.Title)
 	s.due.SetText(formatDateInput(t.DueAt))
+	s.dueLast = s.due.Text()
 	s.desc.SetText(t.Description)
 	s.today.Value = t.Today
 	s.priorityID = t.PriorityID
@@ -183,6 +188,10 @@ func (s *taskFormScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 			s.files = append(s.files[:i], s.files[i+1:]...)
 		}
 	}
+	// A data de entrega ganha os separadores enquanto é digitada:
+	// "05022026" vira "05/02/2026" sem o usuário digitar as barras.
+	maskDateField(&s.due, &s.dueLast, 12)
+
 	// Enter no título salva, como em qualquer formulário curto.
 	submitted := false
 	for {

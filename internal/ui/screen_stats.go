@@ -29,9 +29,12 @@ type statsScreen struct {
 
 	// Intervalo livre da lista de concluídas: quando preenchido e aplicado,
 	// vale no lugar do filtro dia/semana/mês.
-	rangeFrom  widget.Editor
-	rangeTo    widget.Editor
-	applyRange widget.Clickable
+	rangeFrom widget.Editor
+	rangeTo   widget.Editor
+	// Textos do quadro anterior, para a máscara de data dos campos De/Até.
+	rangeFromLast string
+	rangeToLast   string
+	applyRange    widget.Clickable
 	clearRange widget.Clickable
 	customFrom time.Time
 	customTo   time.Time
@@ -84,6 +87,8 @@ func (s *statsScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 			s.view = i
 		}
 	}
+	maskDateField(&s.rangeFrom, &s.rangeFromLast, 8)
+	maskDateField(&s.rangeTo, &s.rangeToLast, 8)
 	if s.applyRange.Clicked(gtx) {
 		s.applyCustomRange()
 	}
@@ -91,6 +96,7 @@ func (s *statsScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		s.customFrom, s.customTo = time.Time{}, time.Time{}
 		s.rangeFrom.SetText("")
 		s.rangeTo.SetText("")
+		s.rangeFromLast, s.rangeToLast = "", ""
 		s.rangeErr = ""
 	}
 
