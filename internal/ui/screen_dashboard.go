@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 
+	"gioui.org/font"
 	"gioui.org/layout"
 	"gioui.org/unit"
 	"gioui.org/widget"
@@ -227,14 +228,38 @@ func (s *dashboardScreen) firePanel(gtx layout.Context, a *App, rep productivity
 		}),
 		layout.Rigid(spacerY(6).Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			label := "Iniciar"
-			switch {
-			case a.tmr.Running():
-				label = "Pausar"
-			case a.tmr.Elapsed() > 0:
-				label = "Retomar"
+			running := a.tmr.Running()
+			elapsed := a.tmr.Elapsed()
+			if elapsed == 0 {
+				return a.th.primary("Iniciar").Layout(gtx, a.th, &s.start)
 			}
-			return a.th.primary(label).Layout(gtx, a.th, &s.start)
+			// Com sessão aberta o botão espalha a ação e o cronômetro, um em
+			// cada canto: vermelho enquanto corre, apagado quando pausado.
+			word := "Pausar"
+			c := colorAccent
+			if !running {
+				word = "Retomar"
+				c = colorInkFaint
+			}
+			b := a.th.primary("")
+			b.Fg = c
+			b.PadX = unit.Dp(20)
+			return b.LayoutWith(gtx, a.th, &s.start, func(gtx layout.Context) layout.Dimensions {
+				gtx.Constraints.Min.X = gtx.Dp(unit.Dp(180))
+				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						l := a.th.label(unit.Sp(16), word, c)
+						l.Font.Weight = font.SemiBold
+						return l.Layout(gtx)
+					}),
+					layout.Flexed(1, layout.Spacer{}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						l := a.th.label(unit.Sp(20), timer.Format(elapsed), c)
+						l.Font.Weight = font.SemiBold
+						return l.Layout(gtx)
+					}),
+				)
+			})
 		}),
 	)
 }

@@ -68,7 +68,13 @@ func rebuild(root string) (string, error) {
 		moved = true
 	}
 
-	cmd := exec.Command("go", "build", "-o", target, ".")
+	// -H=windowsgui gera um app de janela: sem isso o binário novo abriria um
+	// console preto junto. Fora do Windows a flag não existe.
+	args := []string{"build", "-o", target, "."}
+	if runtime.GOOS == "windows" {
+		args = []string{"build", "-ldflags", "-H=windowsgui", "-o", target, "."}
+	}
+	cmd := exec.Command("go", args...)
 	cmd.Dir = root
 	hideWindow(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {

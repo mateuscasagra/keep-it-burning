@@ -220,6 +220,30 @@ func (b ButtonStyle) Layout(gtx layout.Context, th *Theme, click *widget.Clickab
 	})
 }
 
+// LayoutWith desenha o botão com um conteúdo customizado no lugar do texto,
+// mantendo o fundo, a borda e os estados de hover e clique.
+func (b ButtonStyle) LayoutWith(gtx layout.Context, th *Theme, click *widget.Clickable, content layout.Widget) layout.Dimensions {
+	return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		macro := op.Record(gtx.Ops)
+		dims := layout.Inset{
+			Top: b.PadY, Bottom: b.PadY, Left: b.PadX, Right: b.PadX,
+		}.Layout(gtx, content)
+		call := macro.Stop()
+
+		bg := b.Bg
+		switch {
+		case click.Pressed():
+			bg = colorPressed
+		case click.Hovered():
+			bg = colorHover
+		}
+		fillRRect(gtx, dims.Size, b.Radius, bg)
+		strokeRRect(gtx, dims.Size, b.Radius, b.Border, b.Fg)
+		call.Add(gtx.Ops)
+		return dims
+	})
+}
+
 // checkboxShape desenha a caixinha quadrada das listas de tarefas. Marcada,
 // ela ganha um tique desenhado à mão.
 func checkboxShape(gtx layout.Context, checked bool) layout.Dimensions {
