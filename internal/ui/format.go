@@ -51,6 +51,21 @@ func parseDateTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("data inválida: use dd/mm/aaaa ou dd/mm/aaaa hh:mm")
 }
 
+// parseDateOnly lê uma data "dd/mm/aaaa" dos filtros de intervalo do
+// relatório, sem a regra de fim-de-dia dos prazos.
+func parseDateOnly(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, ErrEmptyDate
+	}
+	for _, layout := range []string{"02/01/2006", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, errors.New("data inválida: use dd/mm/aaaa")
+}
+
 // formatDateTime devolve "18:30 05/02/2026", como na lista de tarefas.
 func formatDateTime(t time.Time) string {
 	if t.IsZero() {

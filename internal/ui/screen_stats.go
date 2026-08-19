@@ -7,7 +7,9 @@ import (
 	"gioui.org/layout"
 	"gioui.org/unit"
 	"gioui.org/widget"
+	"gioui.org/widget/material"
 
+	"github.com/dvet/keep-it-burning/internal/model"
 	"github.com/dvet/keep-it-burning/internal/productivity"
 	"github.com/dvet/keep-it-burning/internal/timer"
 )
@@ -24,12 +26,48 @@ type statsScreen struct {
 	period  productivity.Period
 	views   []widget.Clickable
 	view    int
+
+	// Intervalo livre da lista de concluídas: quando preenchido e aplicado,
+	// vale no lugar do filtro dia/semana/mês.
+	rangeFrom  widget.Editor
+	rangeTo    widget.Editor
+	applyRange widget.Clickable
+	clearRange widget.Clickable
+	customFrom time.Time
+	customTo   time.Time
+	rangeErr   string
+
+	doneList widget.List
 }
 
 func (s *statsScreen) init(a *App) {
 	s.period = productivity.PeriodDay
 	s.periods = make([]widget.Clickable, len(productivity.Periods))
 	s.views = make([]widget.Clickable, len(statsViews))
+	s.rangeFrom.SingleLine = true
+	s.rangeTo.SingleLine = true
+	s.doneList.Axis = layout.Vertical
+}
+
+// applyCustomRange valida os campos De/Até e ativa o intervalo livre.
+func (s *statsScreen) applyCustomRange() {
+	from, err := parseDateOnly(s.rangeFrom.Text())
+	if err != nil {
+		s.rangeErr = "De: " + err.Error()
+		return
+	}
+	to, err := parseDateOnly(s.rangeTo.Text())
+	if err != nil {
+		s.rangeErr = "Até: " + err.Error()
+		return
+	}
+	if to.Before(from) {
+		s.rangeErr = "O fim do intervalo não pode vir antes do começo."
+		return
+	}
+	// O dia final entra inteiro: o intervalo é [from, to+24h).
+	s.customFrom, s.customTo = from, to.Add(24*time.Hour)
+	s.rangeErr = ""
 }
 
 func (s *statsScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
@@ -45,6 +83,15 @@ func (s *statsScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		if s.views[i].Clicked(gtx) {
 			s.view = i
 		}
+	}
+	if s.applyRange.Clicked(gtx) {
+		s.applyCustomRange()
+	}
+	if s.clearRange.Clicked(gtx) {
+		s.customFrom, s.customTo = time.Time{}, time.Time{}
+		s.rangeFrom.SetText("")
+		s.rangeTo.SetText("")
+		s.rangeErr = ""
 	}
 
 	return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -267,13 +314,124 @@ func (s *statsScreen) tasksPanel(gtx layout.Context, a *App) layout.Dimensions {
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return statLine(gtx, a.th, "Tempo médio de entrega (criação → conclusão)", formatDelivery(ts.AvgDelivery))
 			}),
-			layout.Flexed(1, layout.Spacer{}.Layout),
+			layout.Rigid(spacerY(14).Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return s.doneHeader(gtx, a)
+			}),
+			layout.Rigid(spacerY(6).Layout),
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return s.doneTasksList(gtx, a)
+			}),
 			layout.Rigid(a.th.label(unit.Sp(11),
 				"Entregues contam no "+labelForPeriod(s.period)+" selecionado; em aberto é o total atual do modo.",
 				colorInkFaint).Layout),
 		}
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 	})
+}
+
+// doneRange devolve o intervalo da lista de concluídas: o intervalo livre
+// quando aplicado, senão o do filtro dia/semana/mês.
+func (s *statsScreen) doneRange() (from, to time.Time, custom bool) {
+	if !s.customFrom.IsZero() {
+		return s.customFrom, s.customTo, true
+	}
+	from, to = s.period.Range(time.Now())
+	return from, to, false
+}
+
+// doneHeader é o título da lista de concluídas com os campos De/Até do
+// intervalo livre.
+func (s *statsScreen) doneHeader(gtx layout.Context, a *App) layout.Dimensions {
+	_, _, custom := s.doneRange()
+	dateField := func(ed *widget.Editor, hint string) layout.FlexChild {
+		return layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(108))
+			gtx.Constraints.Max.X = gtx.Constraints.Min.X
+			return a.th.editorBox(gtx, ed, hint, unit.Dp(0))
+		})
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(a.th.heading("Tarefas concluídas").Layout),
+				layout.Flexed(1, layout.Spacer{}.Layout),
+				layout.Rigid(a.th.small("De").Layout),
+				layout.Rigid(spacerX(6).Layout),
+				dateField(&s.rangeFrom, "dd/mm/aaaa"),
+				layout.Rigid(spacerX(8).Layout),
+				layout.Rigid(a.th.small("Até").Layout),
+				layout.Rigid(spacerX(6).Layout),
+				dateField(&s.rangeTo, "dd/mm/aaaa"),
+				layout.Rigid(spacerX(8).Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					b := a.th.tiny("aplicar")
+					if custom {
+						b.Bg = colorInk
+						b.Fg = colorPaper
+					}
+					return b.Layout(gtx, a.th, &s.applyRange)
+				}),
+				layout.Rigid(spacerX(5).Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					if !custom && s.rangeErr == "" {
+						return layout.Dimensions{}
+					}
+					return a.th.tiny("limpar").Layout(gtx, a.th, &s.clearRange)
+				}),
+			)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if s.rangeErr == "" {
+				return layout.Dimensions{}
+			}
+			return layout.Inset{Top: unit.Dp(4)}.Layout(gtx,
+				a.th.label(unit.Sp(12), s.rangeErr, colorDanger).Layout)
+		}),
+	)
+}
+
+// doneTasksList é a lista rolável das tarefas entregues no intervalo ativo.
+func (s *statsScreen) doneTasksList(gtx layout.Context, a *App) layout.Dimensions {
+	from, to, custom := s.doneRange()
+	tasks := productivity.DoneTasksIn(a.state, a.mode, from, to)
+
+	scope := "no " + labelForPeriod(s.period)
+	if custom {
+		scope = "de " + formatDate(from) + " até " + formatDate(to.Add(-24*time.Hour))
+	}
+	if len(tasks) == 0 {
+		return a.th.small("Nenhuma tarefa concluída " + scope + ".").Layout(gtx)
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(a.th.small(itoa(len(tasks))+" concluída(s) "+scope).Layout),
+		layout.Rigid(spacerY(6).Layout),
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return material.List(a.th.Theme, &s.doneList).Layout(gtx, len(tasks),
+				func(gtx layout.Context, i int) layout.Dimensions {
+					return s.doneTaskRow(gtx, a, tasks[i])
+				})
+		}),
+	)
+}
+
+// doneTaskRow é uma linha da lista: quando entregou, o título e a categoria.
+func (s *statsScreen) doneTaskRow(gtx layout.Context, a *App, t model.Task) layout.Dimensions {
+	catLabel := ""
+	if cat, ok := a.state.Category(a.mode, t.CategoryID); ok {
+		catLabel = cat.Title
+	}
+	return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Right: unit.Dp(4)}.Layout(gtx,
+		func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
+				layout.Rigid(a.th.label(unit.Sp(13), formatDateTime(t.DoneAt), colorInkSoft).Layout),
+				layout.Rigid(spacerX(10).Layout),
+				layout.Flexed(1, a.th.label(unit.Sp(14), truncate(t.Title, 48), colorInk).Layout),
+				layout.Rigid(spacerX(10).Layout),
+				layout.Rigid(a.th.label(unit.Sp(12), catLabel, colorInkFaint).Layout),
+			)
+		})
 }
 
 // taskTable desenha uma tabela entregues/em aberto com linha de total; serve

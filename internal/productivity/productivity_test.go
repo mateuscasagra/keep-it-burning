@@ -496,3 +496,27 @@ func TestTimeStatsForResumeSessoes(t *testing.T) {
 		t.Errorf("melhor dia = %v (%v), quero 05/02 com 4h", ts.BestDay, ts.BestDayTime)
 	}
 }
+
+func TestDoneTasksInFiltraEOrdena(t *testing.T) {
+	st := stateFixture()
+	st.Tasks = []model.Task{
+		{ID: "cedo", Mode: model.ModeWork, Done: true, DoneAt: at(3, 9, 0)},
+		{ID: "tarde", Mode: model.ModeWork, Done: true, DoneAt: at(5, 17, 0)},
+		{ID: "meio", Mode: model.ModeWork, Done: true, DoneAt: at(4, 12, 0)},
+		{ID: "fora", Mode: model.ModeWork, Done: true, DoneAt: at(10, 9, 0)},
+		{ID: "aberta", Mode: model.ModeWork},
+		{ID: "estudo", Mode: model.ModeStudy, Done: true, DoneAt: at(4, 9, 0)},
+	}
+
+	got := DoneTasksIn(st, model.ModeWork, at(3, 0, 0), at(6, 0, 0))
+
+	want := []string{"tarde", "meio", "cedo"} // mais recentes primeiro
+	if len(got) != len(want) {
+		t.Fatalf("concluídas = %v, quero %v", ids(got), want)
+	}
+	for i, id := range want {
+		if got[i].ID != id {
+			t.Errorf("posição %d = %s, quero %s", i, got[i].ID, id)
+		}
+	}
+}

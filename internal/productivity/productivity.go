@@ -454,6 +454,20 @@ func TaskStatsFor(st *model.State, mode model.Mode, p Period, ref time.Time) Tas
 	return stats
 }
 
+// DoneTasksIn devolve as tarefas do modo entregues dentro de [from, to), das
+// mais recentes para as mais antigas. Alimenta a lista de concluídas do
+// relatório, que aceita tanto os períodos fixos quanto um intervalo livre.
+func DoneTasksIn(st *model.State, mode model.Mode, from, to time.Time) []model.Task {
+	var out []model.Task
+	for _, t := range st.Tasks {
+		if t.Mode == mode && t.Done && dates.InRange(t.DoneAt, from, to) {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].DoneAt.After(out[j].DoneAt) })
+	return out
+}
+
 // TimeStats detalha o tempo cronometrado do período: totais, sessões e o dia
 // mais carregado.
 type TimeStats struct {
