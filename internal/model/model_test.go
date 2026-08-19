@@ -201,7 +201,9 @@ func TestTodayTasksMostraConcluidasPorUltimo(t *testing.T) {
 	s.AddTask(Task{ID: "aberta", Mode: ModeWork, Title: "Aberta", PriorityID: "baixa", Today: true})
 	s.AddTask(Task{ID: "fora", Mode: ModeWork, Title: "Fora", PriorityID: "alta"})
 
-	got := s.TodayTasks(ModeWork, time.Now())
+	// O "agora" fica perto da conclusão: concluídas há menos de 24h ainda
+	// aparecem na lista do dia.
+	got := s.TodayTasks(ModeWork, at(5, 13))
 	if len(got) != 2 {
 		t.Fatalf("quero 2 tarefas do dia, tenho %d", len(got))
 	}

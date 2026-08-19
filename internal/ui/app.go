@@ -208,15 +208,19 @@ func (a *App) enterFocus() {
 	a.win.Option(app.Size(unit.Dp(focusSize.X), unit.Dp(focusSize.Y)))
 }
 
-// leaveFocus volta ao dashboard, grava o tempo cronometrado e restaura o
-// tamanho da janela.
+// leaveFocus volta ao dashboard e restaura o tamanho da janela sem pausar a
+// contagem: expandir a tela não interrompe a sessão. Só os trechos já
+// fechados vão para o disco.
 func (a *App) leaveFocus() {
-	for _, s := range a.tmr.Stop() {
-		a.state.AddSession(s)
-	}
-	a.save()
+	a.flushSessions()
 	a.screen = screenDashboard
 	a.win.Option(app.Size(unit.Dp(fullSize.X), unit.Dp(fullSize.Y)))
+}
+
+// pauseTimer pausa a contagem e grava o trecho recém-fechado em disco.
+func (a *App) pauseTimer() {
+	a.tmr.Pause()
+	a.flushSessions()
 }
 
 // flushSessions grava em disco os trechos de tempo já fechados sem interromper

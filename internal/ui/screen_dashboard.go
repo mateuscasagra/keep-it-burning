@@ -71,6 +71,9 @@ func (s *dashboardScreen) init(a *App) {
 
 func (s *dashboardScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if s.back.Clicked(gtx) {
+		// Voltar à tela inicial Trabalho/Estudo é um dos únicos pontos que
+		// pausam a contagem — expandir a janela não pausa.
+		a.pauseTimer()
 		a.goTo(screenHome)
 	}
 	if s.config.Clicked(gtx) {
@@ -85,7 +88,11 @@ func (s *dashboardScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		a.goTo(screenTaskForm)
 	}
 	if s.start.Clicked(gtx) {
-		a.enterFocus()
+		if a.tmr.Running() {
+			a.pauseTimer()
+		} else {
+			a.enterFocus()
+		}
 	}
 
 	rep := a.report(productivity.PeriodDay)
@@ -219,7 +226,14 @@ func (s *dashboardScreen) firePanel(gtx layout.Context, a *App, rep productivity
 		}),
 		layout.Rigid(spacerY(6).Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return a.th.primary("Iniciar").Layout(gtx, a.th, &s.start)
+			label := "Iniciar"
+			switch {
+			case a.tmr.Running():
+				label = "Pausar"
+			case a.tmr.Elapsed() > 0:
+				label = "Retomar"
+			}
+			return a.th.primary(label).Layout(gtx, a.th, &s.start)
 		}),
 	)
 }
