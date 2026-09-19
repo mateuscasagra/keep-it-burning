@@ -35,10 +35,10 @@ type statsScreen struct {
 	rangeFromLast string
 	rangeToLast   string
 	applyRange    widget.Clickable
-	clearRange widget.Clickable
-	customFrom time.Time
-	customTo   time.Time
-	rangeErr   string
+	clearRange    widget.Clickable
+	customFrom    time.Time
+	customTo      time.Time
+	rangeErr      string
 
 	doneList widget.List
 }
@@ -274,66 +274,116 @@ func (s *statsScreen) indicatorsPanel(gtx layout.Context, a *App, rep productivi
 	})
 }
 
-// tasksPanel é a visão só de tarefas: distribuição por prioridade e por
-// categoria, pontualidade e tempo de entrega.
+// tasksPanel é a visão só de tarefas: distribuição por prioridade, dificuldade,
+// categoria e subcategoria, pontualidade, tempo de entrega e a lista do que foi
+// concluído.
+//
+// O painel inteiro rola junto: o resumo é o primeiro item da lista e as
+// concluídas vêm depois. Com o resumo fixo no topo, um modo com muitas
+// categorias empurrava a lista de concluídas para fora do painel — ela ficava
+// com altura zero e parecia que não havia nada concluído no período.
 func (s *statsScreen) tasksPanel(gtx layout.Context, a *App) layout.Dimensions {
 	ts := productivity.TaskStatsFor(a.state, a.mode, s.period, time.Now())
-	hasCats := len(a.state.SettingsFor(a.mode).Categories) > 0
+	from, to, custom := s.doneRange()
+	tasks := productivity.DoneTasksIn(a.state, a.mode, from, to)
+	scope := doneScope(s.period, from, to, custom)
 
 	return a.th.panelFill(gtx, unit.Dp(16), func(gtx layout.Context) layout.Dimensions {
-		gtx.Constraints.Min.X = gtx.Constraints.Max.X
-		children := []layout.FlexChild{
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Alignment: layout.Start}.Layout(gtx,
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-						return taskTable(gtx, a.th, "Por prioridade", "Prioridade", ts.Lines, ts.DoneCount, ts.OpenCount)
-					}),
-					layout.Rigid(spacerX(28).Layout),
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-						if !hasCats {
-							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-								layout.Rigid(a.th.heading("Por categoria").Layout),
-								layout.Rigid(spacerY(10).Layout),
-								layout.Rigid(a.th.small("Crie categorias nas Configurações para fatiar as tarefas aqui.").Layout),
-							)
+		gtx.Constraints.Min = gtx.Constraints.Max
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return material.List(a.th.Theme, &s.doneList).Layout(gtx, len(tasks)+1,
+					func(gtx layout.Context, i int) layout.Dimensions {
+						if i == 0 {
+							return s.tasksSummary(gtx, a, ts, len(tasks), scope)
 						}
-						return taskTable(gtx, a.th, "Por categoria", "Categoria", ts.Categories, ts.DoneCount, ts.OpenCount)
-					}),
-				)
-			}),
-			layout.Rigid(spacerY(16).Layout),
-			layout.Rigid(a.th.heading("Prazos e entrega").Layout),
-			layout.Rigid(spacerY(10).Layout),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				v := "—"
-				if ts.DoneWithDue > 0 {
-					v = pct(ts.LateRatio) + " (" + itoa(ts.DoneLate) + " de " + itoa(ts.DoneWithDue) + " com prazo)"
-				}
-				return statLine(gtx, a.th, "Entregues fora do prazo", v)
-			}),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return statLine(gtx, a.th, "Em aberto já vencidas", itoa(ts.OverdueOpen))
-			}),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return statLine(gtx, a.th, "Em aberto sem data limite", itoa(ts.NoDueOpen))
-			}),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return statLine(gtx, a.th, "Tempo médio de entrega (criação → conclusão)", formatDelivery(ts.AvgDelivery))
-			}),
-			layout.Rigid(spacerY(14).Layout),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return s.doneHeader(gtx, a)
+						return s.doneTaskRow(gtx, a, tasks[i-1])
+					})
 			}),
 			layout.Rigid(spacerY(6).Layout),
-			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-				return s.doneTasksList(gtx, a)
-			}),
 			layout.Rigid(a.th.label(unit.Sp(11),
 				"Entregues contam no "+labelForPeriod(s.period)+" selecionado; em aberto é o total atual do modo.",
 				colorInkFaint).Layout),
-		}
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+		)
 	})
+}
+
+// tasksSummary é o bloco que abre a visão: as tabelas, os prazos e o cabeçalho
+// da lista de concluídas.
+func (s *statsScreen) tasksSummary(gtx layout.Context, a *App, ts productivity.TaskStats,
+	doneListLen int, scope string) layout.Dimensions {
+
+	cfg := a.state.SettingsFor(a.mode)
+	// Uma tabela por campo configurável. As que dependem de listas opcionais
+	// viram um recado quando o modo ainda não tem nada cadastrado.
+	table := func(title, firstCol, hint string, lines []productivity.PriorityLine, has bool) layout.Widget {
+		return func(gtx layout.Context) layout.Dimensions {
+			if !has {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(a.th.heading(title).Layout),
+					layout.Rigid(spacerY(10).Layout),
+					layout.Rigid(a.th.small(hint).Layout),
+				)
+			}
+			return taskTable(gtx, a.th, title, firstCol, lines, ts.DoneCount, ts.OpenCount)
+		}
+	}
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Start}.Layout(gtx,
+				layout.Flexed(1, table("Por prioridade", "Prioridade", "", ts.Lines, true)),
+				layout.Rigid(spacerX(20).Layout),
+				layout.Flexed(1, table("Por dificuldade", "Dificuldade",
+					"Crie dificuldades nas Configurações.", ts.Difficulties, len(cfg.Difficulties) > 0)),
+				layout.Rigid(spacerX(20).Layout),
+				layout.Flexed(1, table("Por categoria", "Categoria",
+					"Crie categorias nas Configurações para fatiar as tarefas aqui.", ts.Categories, len(cfg.Categories) > 0)),
+				layout.Rigid(spacerX(20).Layout),
+				layout.Flexed(1, table("Por subcategoria", "Subcategoria",
+					"Crie subcategorias nas Configurações para fatiar as tarefas aqui.", ts.Subcategories, len(cfg.Subcategories) > 0)),
+			)
+		}),
+		layout.Rigid(spacerY(16).Layout),
+		layout.Rigid(a.th.heading("Prazos e entrega").Layout),
+		layout.Rigid(spacerY(10).Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			v := "—"
+			if ts.DoneWithDue > 0 {
+				v = pct(ts.LateRatio) + " (" + itoa(ts.DoneLate) + " de " + itoa(ts.DoneWithDue) + " com prazo)"
+			}
+			return statLine(gtx, a.th, "Entregues fora do prazo", v)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return statLine(gtx, a.th, "Em aberto já vencidas", itoa(ts.OverdueOpen))
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return statLine(gtx, a.th, "Em aberto sem data limite", itoa(ts.NoDueOpen))
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return statLine(gtx, a.th, "Tempo médio de entrega (criação → conclusão)", formatDelivery(ts.AvgDelivery))
+		}),
+		layout.Rigid(spacerY(14).Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return s.doneHeader(gtx, a)
+		}),
+		layout.Rigid(spacerY(6).Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if doneListLen == 0 {
+				return a.th.small("Nenhuma tarefa concluída " + scope + ".").Layout(gtx)
+			}
+			return a.th.small(itoa(doneListLen) + " concluída(s) " + scope).Layout(gtx)
+		}),
+		layout.Rigid(spacerY(6).Layout),
+	)
+}
+
+// doneScope descreve em palavras o intervalo da lista de concluídas.
+func doneScope(p productivity.Period, from, to time.Time, custom bool) string {
+	if custom {
+		return "de " + formatDate(from) + " até " + formatDate(to.Add(-24*time.Hour))
+	}
+	return "no " + labelForPeriod(p)
 }
 
 // doneRange devolve o intervalo da lista de concluídas: o intervalo livre
@@ -397,31 +447,6 @@ func (s *statsScreen) doneHeader(gtx layout.Context, a *App) layout.Dimensions {
 	)
 }
 
-// doneTasksList é a lista rolável das tarefas entregues no intervalo ativo.
-func (s *statsScreen) doneTasksList(gtx layout.Context, a *App) layout.Dimensions {
-	from, to, custom := s.doneRange()
-	tasks := productivity.DoneTasksIn(a.state, a.mode, from, to)
-
-	scope := "no " + labelForPeriod(s.period)
-	if custom {
-		scope = "de " + formatDate(from) + " até " + formatDate(to.Add(-24*time.Hour))
-	}
-	if len(tasks) == 0 {
-		return a.th.small("Nenhuma tarefa concluída " + scope + ".").Layout(gtx)
-	}
-
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.th.small(itoa(len(tasks))+" concluída(s) "+scope).Layout),
-		layout.Rigid(spacerY(6).Layout),
-		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			return material.List(a.th.Theme, &s.doneList).Layout(gtx, len(tasks),
-				func(gtx layout.Context, i int) layout.Dimensions {
-					return s.doneTaskRow(gtx, a, tasks[i])
-				})
-		}),
-	)
-}
-
 // doneTaskRow é uma linha da lista: quando entregou, o título e a categoria.
 func (s *statsScreen) doneTaskRow(gtx layout.Context, a *App, t model.Task) layout.Dimensions {
 	catLabel := ""
@@ -473,10 +498,19 @@ func taskTable(gtx layout.Context, th *Theme, title, firstCol string, lines []pr
 // taskTableRow desenha uma linha da tabela de prioridades em três colunas.
 func taskTableRow(gtx layout.Context, th *Theme, label, done, open string, c color.NRGBA) layout.Dimensions {
 	return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		// O respiro no fim de cada coluna evita que o rótulo encoste no número
+		// da coluna seguinte quando as tabelas ficam estreitas.
+		col := func(txt string) layout.Widget {
+			return func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, th.cell(unit.Sp(13), txt, c).Layout)
+			}
+		}
+		// As colunas de número precisam caber "Entregues" e "Em aberto" por
+		// extenso; são quatro tabelas lado a lado, então sobra pouco para cada.
 		return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
-			layout.Flexed(0.5, th.label(unit.Sp(14), label, c).Layout),
-			layout.Flexed(0.25, th.label(unit.Sp(14), done, c).Layout),
-			layout.Flexed(0.25, th.label(unit.Sp(14), open, c).Layout),
+			layout.Flexed(0.44, col(label)),
+			layout.Flexed(0.28, col(done)),
+			layout.Flexed(0.28, col(open)),
 		)
 	})
 }

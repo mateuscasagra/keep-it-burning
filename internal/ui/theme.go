@@ -30,6 +30,8 @@ var (
 	colorAccentSoft = color.NRGBA{R: 0xf5, G: 0x9e, B: 0x0b, A: 0xff}
 	colorDanger     = color.NRGBA{R: 0xc0, G: 0x2a, B: 0x1c, A: 0xff}
 	colorMuted      = color.NRGBA{R: 0xb5, G: 0xaf, B: 0xa5, A: 0xff}
+	// colorScrim é o véu que escurece a tela atrás de uma caixa de diálogo.
+	colorScrim = color.NRGBA{R: 0x1c, G: 0x1b, B: 0x19, A: 0x66}
 )
 
 // Espessuras de traço. O contorno grosso é o que dá o ar de rabisco.
@@ -75,11 +77,28 @@ func (t *Theme) small(txt string) material.LabelStyle {
 	return t.label(unit.Sp(13), txt, colorInkSoft)
 }
 
+// cell é o texto de uma célula de tabela: uma linha só, cortada com
+// reticências quando não cabe. Sem isso um título comprido quebraria em duas
+// linhas e a coluna ao lado desceria junto, desalinhando a tabela inteira.
+func (t *Theme) cell(size unit.Sp, txt string, c color.NRGBA) material.LabelStyle {
+	l := t.label(size, txt, c)
+	l.MaxLines = 1
+	return l
+}
+
 // heading é um título de seção.
 func (t *Theme) heading(txt string) material.LabelStyle {
 	l := t.label(unit.Sp(18), txt, colorInk)
 	l.Font.Weight = font.SemiBold
 	return l
+}
+
+// scrollGutter é a faixa que a barra de rolagem de uma lista reserva à direita.
+// O cabeçalho de uma tabela precisa descontar a mesma faixa: sem isso ele
+// reparte uma largura maior que a das linhas e os títulos escorregam para a
+// direita dos valores, cada vez mais a cada coluna.
+func (t *Theme) scrollGutter(list *widget.List) unit.Dp {
+	return material.List(t.Theme, list).Width()
 }
 
 // rrect devolve o retângulo arredondado que cobre as restrições atuais.
@@ -176,6 +195,21 @@ func (t *Theme) primary(txt string) ButtonStyle {
 	b.PadY = unit.Dp(14)
 	b.Border = strokeThick
 	b.Emphasis = true
+	return b
+}
+
+// chip devolve o estilo dos botões de filtro. Selecionado, ele inverte as
+// cores para o estado ficar óbvio numa fila de vários.
+func (t *Theme) chip(txt string, on bool) ButtonStyle {
+	b := t.button(txt)
+	b.Size, b.PadX, b.PadY = unit.Sp(13), unit.Dp(12), unit.Dp(6)
+	b.Radius = unit.Dp(9)
+	b.Border = strokeThin
+	if on {
+		b.Bg = colorInk
+		b.Fg = colorPaper
+		b.Emphasis = true
+	}
 	return b
 }
 

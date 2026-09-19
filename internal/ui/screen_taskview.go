@@ -129,6 +129,16 @@ func (s *taskViewScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if cat, ok := a.state.Category(a.mode, t.CategoryID); ok {
 		catLabel = cat.Title
 	}
+	subLabel := "—"
+	if sub, ok := a.state.Subcategory(a.mode, t.SubcategoryID); ok {
+		subLabel = sub.Title
+	}
+	// A dificuldade mostra o fator junto: é ele que multiplica o peso da
+	// prioridade no score.
+	diffLabel := "—"
+	if d, ok := a.state.Difficulty(a.mode, t.DifficultyID); ok {
+		diffLabel = d.Title + " · " + itoa(d.Value)
+	}
 
 	dueColor := colorInk
 	if t.Overdue(time.Now()) {
@@ -165,7 +175,12 @@ func (s *taskViewScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 					return material.List(a.th.Theme, &s.list).Layout(gtx, 1,
 						func(gtx layout.Context, _ int) layout.Dimensions {
-							return s.details(gtx, a, t, prioLabel, catLabel, dueColor)
+							return s.details(gtx, a, t, taskLabels{
+								priority:    prioLabel,
+								difficulty:  diffLabel,
+								category:    catLabel,
+								subcategory: subLabel,
+							}, dueColor)
 						})
 				}),
 				layout.Rigid(spacerY(10).Layout),
@@ -183,18 +198,32 @@ func (s *taskViewScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	})
 }
 
+// taskLabels são os campos classificatórios já resolvidos para exibição.
+type taskLabels struct {
+	priority    string
+	difficulty  string
+	category    string
+	subcategory string
+}
+
 // details é o corpo rolável da visualização: título, datas e o resumo.
-func (s *taskViewScreen) details(gtx layout.Context, a *App, t model.Task, prioLabel, catLabel string, dueColor color.NRGBA) layout.Dimensions {
+func (s *taskViewScreen) details(gtx layout.Context, a *App, t model.Task, lbl taskLabels, dueColor color.NRGBA) layout.Dimensions {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(a.th.label(unit.Sp(19), t.Title, colorInk).Layout),
 		layout.Rigid(spacerY(4).Layout),
 		layout.Rigid(a.th.small(a.mode.Label()).Layout),
 		layout.Rigid(spacerY(12).Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return statLine(gtx, a.th, "Prioridade", prioLabel)
+			return statLine(gtx, a.th, "Prioridade", lbl.priority)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return statLine(gtx, a.th, "Categoria", catLabel)
+			return statLine(gtx, a.th, "Dificuldade", lbl.difficulty)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return statLine(gtx, a.th, "Categoria", lbl.category)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return statLine(gtx, a.th, "Subcategoria", lbl.subcategory)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return statLineColor(gtx, a.th, "Data incluída", formatDateTime(t.CreatedAt), colorInk)

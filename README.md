@@ -30,11 +30,16 @@ Um dia parado deixa a fogueira na brasa.
 
 - **Dois modos independentes**: trabalho e estudo. Cada um tem as próprias tarefas,
   prioridades e metas de tempo.
-- **Tarefas** com título, prioridade, data limite e resumo. Você marca as que vai
-  fazer hoje como *tarefas do dia*.
+- **Tarefas** com título, prioridade, dificuldade, categoria, subcategoria, data
+  limite e resumo. Você marca as que vai fazer hoje como *tarefas do dia*.
 - **Prioridades configuráveis**: você define o título e o **valor** (o peso) de cada
   uma. Uma tarefa "Alta" de peso 5 alimenta o fogo cinco vezes mais que uma "Baixa"
   de peso 1.
+- **Dificuldades configuráveis**: o valor da dificuldade **multiplica** o peso da
+  prioridade. Uma tarefa difícil entregue vale mais que uma fácil de mesma
+  prioridade. Tarefa sem dificuldade usa o fator 1.
+- **Categorias e subcategorias** configuráveis, independentes entre si. Elas não
+  pesam no score: servem para filtrar a lista de tarefas e fatiar os relatórios.
 - **Metas de tempo** diária e semanal, comparadas com o tempo realmente cronometrado.
 - **Modo foco**: ao apertar *Iniciar*, a janela encolhe e fica só a fogueira, as
   tarefas do dia, o botão de pausa e o cronômetro.
@@ -72,7 +77,8 @@ de tempo e de entrega.
 
 ### Configuração
 
-Prioridades (título e valor) e metas de tempo médio, separadas por modo.
+Prioridades e dificuldades (título e valor), categorias e subcategorias (título) e
+metas de tempo médio, separadas por modo.
 
 ![Configuração](docs/app-configuracao.png)
 
@@ -135,10 +141,12 @@ precisa instalar nada.
 ## Como usar
 
 1. **Abra o app** e escolha **Trabalho** ou **Estudo**.
-2. **Configure suas prioridades e metas** no botão *Configurações*, no canto
+2. **Configure suas prioridades, dificuldades, categorias e metas** no botão
+   *Configurações*, no canto
    superior direito. O padrão já vem com Alta (5), Média (3) e Baixa (1), 8h por dia
    e 40h por semana no modo trabalho.
-3. **Crie tarefas** em *+ Nova tarefa*: nome, prioridade, data limite e um resumo.
+3. **Crie tarefas** em *+ Nova tarefa*: nome, prioridade, dificuldade, categoria,
+   subcategoria, data limite e um resumo.
 4. **Marque as tarefas de hoje** com o botão *tarefa do dia* na lista de pendentes.
    Elas aparecem no painel da direita e no modo foco.
 5. **Aperte *Iniciar***. A janela encolhe, o cronômetro começa a rodar e você
@@ -172,8 +180,12 @@ entrega = peso das tarefas entregues ÷ peso de todas as tarefas do período
 tempo   = tempo cronometrado ÷ meta do período   (limitado a 1)
 ```
 
-**O peso é o valor da prioridade que você configurou.** Entregar uma tarefa "Alta"
-de peso 5 vale o mesmo que entregar cinco tarefas "Baixa" de peso 1.
+**O peso de cada tarefa é o valor da prioridade multiplicado pelo valor da
+dificuldade**, os dois configurados por você. Entregar uma tarefa "Alta" de peso 5
+vale o mesmo que entregar cinco tarefas "Baixa" de peso 1; e a mesma "Alta" marcada
+como "Difícil" de fator 3 vale três vezes mais que ela marcada como "Fácil" de
+fator 1. Tarefa sem dificuldade escolhida usa o fator 1, o neutro — por isso as
+tarefas criadas antes do campo existir continuam pesando o que sempre pesaram.
 
 Uma tarefa entra no período se foi **concluída dentro dele**; e conta como pendente
 se está em aberto e é **cobrada nele** — seja porque o prazo cai dentro do período,

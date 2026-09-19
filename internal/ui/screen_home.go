@@ -25,13 +25,15 @@ func (s *homeScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if s.update.Clicked(gtx) {
 		a.startUpdate()
 	}
+	// Entrar pelo início sempre abre o painel completo: a visualização
+	// reduzida é uma escolha da sessão, não um estado que persegue o usuário.
 	if s.work.Clicked(gtx) {
 		a.setMode(model.ModeWork)
-		a.goTo(screenDashboard)
+		a.setView(viewFull)
 	}
 	if s.study.Clicked(gtx) {
 		a.setMode(model.ModeStudy)
-		a.goTo(screenDashboard)
+		a.setView(viewFull)
 	}
 
 	score := a.overallDayScore()

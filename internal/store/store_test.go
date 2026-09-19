@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,17 +120,133 @@ func TestSaveSobrescreveSemDeixarLixo(t *testing.T) {
 		t.Error("a tarefa nova não foi gravada")
 	}
 
-	// Nenhum arquivo temporário pode sobrar ao lado do arquivo de dados.
+	// Ao lado do arquivo de dados só pode ficar o espelho: nenhum temporário
+	// pode sobrar de uma gravação para a outra.
 	entries, err := os.ReadDir(filepath.Dir(s.Path()))
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name() != FileName {
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
+	}
+	esperado := map[string]bool{FileName: true, FileName + BackupSuffix: true}
+	if len(names) != len(esperado) {
+		t.Errorf("diretório deveria conter só %v, tenho %v", esperado, names)
+	}
+	for _, n := range names {
+		if !esperado[n] {
+			t.Errorf("sobrou %q no diretório de dados", n)
 		}
-		t.Errorf("diretório deveria conter só %s, tenho %v", FileName, names)
+	}
+}
+
+func TestSaveMantemEspelhoDeBackup(t *testing.T) {
+	s := tempStore(t)
+
+	st := model.NewState()
+	st.AddTask(model.Task{ID: "t1", Mode: model.ModeWork, Title: "Primeira"})
+	if err := s.Save(st); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	bak, err := os.ReadFile(s.Path() + BackupSuffix)
+	if err != nil {
+		t.Fatalf("o espelho deveria existir depois do Save: %v", err)
+	}
+	principal, err := os.ReadFile(s.Path())
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(bak) != string(principal) {
+		t.Error("o espelho deveria ter os mesmos bytes do arquivo principal")
+	}
+}
+
+func TestLoadCaiNoBackupQuandoOArquivoSome(t *testing.T) {
+	// É o caso do botão Atualizar: o app novo abre enquanto o antigo ainda
+	// está trocando o arquivo. Sem o espelho, "arquivo ausente" seria lido
+	// como primeiro uso e o app abriria sem nenhuma tarefa.
+	s := tempStore(t)
+
+	st := model.NewState()
+	st.AddTask(model.Task{ID: "t1", Mode: model.ModeWork, Title: "Primeira"})
+	if err := s.Save(st); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := os.Remove(s.Path()); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := loaded.Task("t1"); !ok {
+		t.Error("a tarefa deveria ter voltado do espelho")
+	}
+}
+
+func TestLoadCaiNoBackupQuandoOArquivoEstaCorrompido(t *testing.T) {
+	s := tempStore(t)
+
+	st := model.NewState()
+	st.AddTask(model.Task{ID: "t1", Mode: model.ModeWork, Title: "Primeira"})
+	if err := s.Save(st); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := os.WriteFile(s.Path(), []byte("{isso nao e json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := loaded.Task("t1"); !ok {
+		t.Error("a tarefa deveria ter voltado do espelho")
+	}
+}
+
+func TestSaveNaoApagaOArquivoAntesDeTrocar(t *testing.T) {
+	// O arquivo nunca pode deixar de existir no meio de um Save: era essa
+	// fresta que fazia o app novo abrir vazio depois do Atualizar.
+	s := tempStore(t)
+	if err := s.Save(model.NewState()); err != nil {
+		t.Fatalf("Save inicial: %v", err)
+	}
+
+	parar := make(chan struct{})
+	sumiu := make(chan struct{}, 1)
+	go func() {
+		for {
+			select {
+			case <-parar:
+				return
+			default:
+			}
+			if _, err := os.Stat(s.Path()); errors.Is(err, os.ErrNotExist) {
+				select {
+				case sumiu <- struct{}{}:
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		if err := s.Save(model.NewState()); err != nil {
+			close(parar)
+			t.Fatalf("Save %d: %v", i, err)
+		}
+	}
+	close(parar)
+
+	select {
+	case <-sumiu:
+		t.Error("o arquivo de dados deixou de existir durante um Save")
+	default:
 	}
 }
 

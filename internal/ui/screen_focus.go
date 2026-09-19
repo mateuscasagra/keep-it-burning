@@ -12,11 +12,13 @@ import (
 	"github.com/dvet/keep-it-burning/internal/timer"
 )
 
-// focusScreen é a janela reduzida que fica aberta durante a sessão: só a
-// fogueira, as tarefas do dia, o botão de pausa e o cronômetro.
+// focusScreen é a janela reduzida que fica aberta durante a sessão: a
+// fogueira, o botão de pausa, o cronômetro e — fora da visualização mini — as
+// tarefas do dia.
 type focusScreen struct {
 	expand widget.Clickable
 	pause  widget.Clickable
+	views  viewPicker
 	rows   rowSet
 	list   widget.List
 }
@@ -27,8 +29,9 @@ func (s *focusScreen) init(a *App) {
 }
 
 func (s *focusScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
+	s.views.update(gtx, a)
 	if s.expand.Clicked(gtx) {
-		a.leaveFocus()
+		a.setView(viewFull)
 	}
 	if s.pause.Clicked(gtx) {
 		a.tmr.Toggle()
@@ -37,6 +40,20 @@ func (s *focusScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		a.flushSessions()
 	}
 
+	return layout.Stack{}.Layout(gtx,
+		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return s.content(gtx, a)
+		}),
+		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return s.views.overlay(gtx, a, unit.Dp(58), unit.Dp(22))
+		}),
+	)
+}
+
+// content é o corpo da janela reduzida: fogueira, tarefas do dia e relógio.
+func (s *focusScreen) content(gtx layout.Context, a *App) layout.Dimensions {
 	running := a.tmr.Running()
 	elapsed := a.tmr.Elapsed()
 	intensity := a.dayIntensity()
@@ -48,40 +65,157 @@ func (s *focusScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	}
 	s.rows.prune(alive)
 
+	children := []layout.FlexChild{
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return s.topBar(gtx, a)
+		}),
+		// A fogueira cede um pouco de espaço para a lista: com os grupos, ela
+		// precisa de mais linhas para caber sem virar um espremido só.
+		layout.Flexed(1.1, func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return Fire{Intensity: intensity, Time: a.animTime(gtx)}.Layout(gtx)
+		}),
+	}
+	// As tarefas vão para a tela agrupadas por subcategoria, na ordem em que as
+	// subcategorias estão configuradas.
+	entries := groupBySubcategory(a.state, a.mode, tasks)
+
+	children = append(children,
+		layout.Rigid(spacerY(4).Layout),
+		layout.Flexed(1.4, func(gtx layout.Context) layout.Dimensions {
+			if len(tasks) == 0 {
+				return a.th.small("Sem tarefas do dia.").Layout(gtx)
+			}
+			return material.List(a.th.Theme, &s.list).Layout(gtx, len(entries),
+				func(gtx layout.Context, i int) layout.Dimensions {
+					if entries[i].isHeader {
+						return s.groupHeader(gtx, a, entries[i], i == 0)
+					}
+					return s.item(gtx, a, entries[i].task)
+				})
+		}),
+		layout.Rigid(spacerY(8).Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return s.footer(gtx, a, running, elapsed)
+		}),
+	)
+
 	return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return a.th.panelFill(gtx, unit.Dp(12), func(gtx layout.Context) layout.Dimensions {
 			gtx.Constraints.Min = gtx.Constraints.Max
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+		})
+	})
+}
+
+// topBar traz o modo, o seletor de visualização e o atalho de voltar ao
+// tamanho cheio.
+func (s *focusScreen) topBar(gtx layout.Context, a *App) layout.Dimensions {
+	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(a.th.label(unit.Sp(13), a.mode.Label(), colorInkSoft).Layout),
+		layout.Flexed(1, layout.Spacer{}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return s.views.button(gtx, a, true)
+		}),
+		layout.Rigid(spacerX(6).Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return expandButton(gtx, a.th, &s.expand)
+		}),
+	)
+}
+
+// focusEntry é uma linha da lista da janela reduzida: ou o cabeçalho de uma
+// subcategoria, ou uma tarefa.
+type focusEntry struct {
+	isHeader bool
+	// Preenchidos só no cabeçalho: o nome do grupo e quanto dele já saiu.
+	header string
+	done   int
+	total  int
+
+	task model.Task
+}
+
+// semSub é o rótulo do grupo das tarefas que ficaram sem subcategoria.
+const semSub = "Sem subcategoria"
+
+// groupBySubcategory organiza as tarefas do dia por subcategoria, na ordem em
+// que elas estão configuradas, com as sem subcategoria por último. Com um grupo
+// só a lista volta a ser plana: um cabeçalho que não separa nada de nada só
+// gastaria as poucas linhas que a janela reduzida tem.
+func groupBySubcategory(st *model.State, mode model.Mode, tasks []model.Task) []focusEntry {
+	subs := st.SettingsFor(mode).Subcategories
+	order := make(map[string]int, len(subs))
+	for i, c := range subs {
+		order[c.ID] = i
+	}
+
+	// A última posição é o grupo "sem subcategoria"; tarefa cuja subcategoria
+	// foi apagada da configuração cai nele também.
+	groups := make([][]model.Task, len(subs)+1)
+	used := 0
+	for _, t := range tasks {
+		i, ok := order[t.SubcategoryID]
+		if !ok {
+			i = len(subs)
+		}
+		if len(groups[i]) == 0 {
+			used++
+		}
+		groups[i] = append(groups[i], t)
+	}
+
+	entries := make([]focusEntry, 0, len(tasks)+used)
+	if used <= 1 {
+		for _, t := range tasks {
+			entries = append(entries, focusEntry{task: t})
+		}
+		return entries
+	}
+	for i, g := range groups {
+		if len(g) == 0 {
+			continue
+		}
+		title := semSub
+		if i < len(subs) {
+			title = subs[i].Title
+		}
+		done := 0
+		for _, t := range g {
+			if t.Done {
+				done++
+			}
+		}
+		entries = append(entries, focusEntry{isHeader: true, header: title, done: done, total: len(g)})
+		for _, t := range g {
+			entries = append(entries, focusEntry{task: t})
+		}
+	}
+	return entries
+}
+
+// groupHeader é a faixa que abre um grupo: o nome da subcategoria e o quanto
+// dela já foi riscado.
+func (s *focusScreen) groupHeader(gtx layout.Context, a *App, e focusEntry, first bool) layout.Dimensions {
+	top := unit.Dp(10)
+	if first {
+		top = unit.Dp(0)
+	}
+	return layout.Inset{Top: top, Bottom: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx,
+		func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-						layout.Rigid(a.th.label(unit.Sp(13), a.mode.Label(), colorInkSoft).Layout),
-						layout.Flexed(1, layout.Spacer{}.Layout),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return expandButton(gtx, a.th, &s.expand)
-						}),
+						layout.Flexed(1, a.th.cell(unit.Sp(12), e.header, colorInkSoft).Layout),
+						layout.Rigid(spacerX(6).Layout),
+						layout.Rigid(a.th.label(unit.Sp(11),
+							itoa(e.done)+"/"+itoa(e.total), colorInkFaint).Layout),
 					)
 				}),
-				layout.Flexed(1.3, func(gtx layout.Context) layout.Dimensions {
-					gtx.Constraints.Min = gtx.Constraints.Max
-					return Fire{Intensity: intensity, Time: a.animTime(gtx)}.Layout(gtx)
-				}),
-				layout.Rigid(spacerY(4).Layout),
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					if len(tasks) == 0 {
-						return a.th.small("Sem tarefas do dia.").Layout(gtx)
-					}
-					return material.List(a.th.Theme, &s.list).Layout(gtx, len(tasks),
-						func(gtx layout.Context, i int) layout.Dimensions {
-							return s.item(gtx, a, tasks[i])
-						})
-				}),
-				layout.Rigid(spacerY(8).Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return s.footer(gtx, a, running, elapsed)
-				}),
+				layout.Rigid(spacerY(3).Layout),
+				layout.Rigid(separator),
 			)
 		})
-	})
 }
 
 // item é uma tarefa do dia na janela reduzida.

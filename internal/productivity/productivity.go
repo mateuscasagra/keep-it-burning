@@ -212,11 +212,13 @@ func Analyze(st *model.State, mode model.Mode, p Period, ref time.Time) Report {
 		Target:       target,
 	}
 
+	// O peso de cada tarefa é prioridade × dificuldade: entregar algo difícil
+	// move mais o score do que entregar algo fácil de mesma prioridade.
 	for _, t := range done {
-		rep.DoneWeight += float64(st.PriorityValue(mode, t.PriorityID))
+		rep.DoneWeight += st.TaskWeight(mode, t)
 	}
 	for _, t := range pending {
-		rep.PendingWeight += float64(st.PriorityValue(mode, t.PriorityID))
+		rep.PendingWeight += st.TaskWeight(mode, t)
 	}
 
 	total := rep.DoneWeight + rep.PendingWeight
@@ -247,7 +249,9 @@ func buildSlices(st *model.State, mode model.Mode, done []model.Task, pendingWei
 	for _, t := range done {
 		p, ok := st.Priority(mode, t.PriorityID)
 		label := p.Title
-		value := float64(p.Value)
+		// A fatia usa o mesmo peso do score, dificuldade incluída: a pizza
+		// mostra de onde veio o número que está do lado dela.
+		value := st.TaskWeight(mode, t)
 		if !ok {
 			label = "Sem prioridade"
 			value = 0
@@ -346,9 +350,12 @@ type PriorityLine struct {
 // do recorte de datas.
 type TaskStats struct {
 	Lines []PriorityLine
-	// Categories é a mesma tabela fatiada pelas categorias configuradas, com
-	// uma linha "Sem categoria" para as tarefas não classificadas.
-	Categories []PriorityLine
+	// Categories, Subcategories e Difficulties são a mesma tabela fatiada pelos
+	// outros campos configuráveis, cada uma com uma linha de sobra ("Sem
+	// categoria", etc.) para as tarefas não classificadas.
+	Categories    []PriorityLine
+	Subcategories []PriorityLine
+	Difficulties  []PriorityLine
 
 	DoneCount int
 	OpenCount int
@@ -367,6 +374,76 @@ type TaskStats struct {
 	AvgDelivery time.Duration
 }
 
+// labeled é um par id/rótulo: o mínimo que uma tabela de contagem precisa
+// saber sobre prioridade, categoria, subcategoria ou dificuldade.
+type labeled struct{ id, title string }
+
+func priorityLabels(ps []model.Priority) []labeled {
+	out := make([]labeled, len(ps))
+	for i, p := range ps {
+		out[i] = labeled{p.ID, p.Title}
+	}
+	return out
+}
+
+func categoryLabels(cs []model.Category) []labeled {
+	out := make([]labeled, len(cs))
+	for i, c := range cs {
+		out[i] = labeled{c.ID, c.Title}
+	}
+	return out
+}
+
+func subcategoryLabels(cs []model.Subcategory) []labeled {
+	out := make([]labeled, len(cs))
+	for i, c := range cs {
+		out[i] = labeled{c.ID, c.Title}
+	}
+	return out
+}
+
+func difficultyLabels(ds []model.Difficulty) []labeled {
+	out := make([]labeled, len(ds))
+	for i, d := range ds {
+		out[i] = labeled{d.ID, d.Title}
+	}
+	return out
+}
+
+// tally acumula entregues e em aberto por rótulo, na ordem da configuração. A
+// linha de sobra só nasce se alguma tarefa cair nela: uma tabela sem "Sem
+// categoria" é mais limpa do que uma com a linha zerada.
+type tally struct {
+	lines      []PriorityLine
+	index      map[string]int
+	other      int
+	otherLabel string
+}
+
+func newTally(items []labeled, otherLabel string) *tally {
+	t := &tally{
+		index:      make(map[string]int, len(items)),
+		other:      -1,
+		otherLabel: otherLabel,
+	}
+	for _, it := range items {
+		t.index[it.id] = len(t.lines)
+		t.lines = append(t.lines, PriorityLine{Label: it.title})
+	}
+	return t
+}
+
+func (t *tally) line(id string) *PriorityLine {
+	if i, ok := t.index[id]; ok {
+		return &t.lines[i]
+	}
+	if t.other < 0 {
+		t.other = len(t.lines)
+		t.lines = append(t.lines, PriorityLine{Label: t.otherLabel})
+	}
+	return &t.lines[t.other]
+}
+
 // TaskStatsFor calcula a visão de tarefas de um modo no período, tomando ref
 // como "agora" para decidir o que já venceu.
 func TaskStatsFor(st *model.State, mode model.Mode, p Period, ref time.Time) TaskStats {
@@ -382,47 +459,21 @@ func TaskStatsFor(st *model.State, mode model.Mode, p Period, ref time.Time) Tas
 
 	stats := TaskStats{DoneCount: len(done), OpenCount: len(open)}
 
-	// Uma linha por prioridade configurada, na ordem da configuração; tarefas
-	// com prioridade desconhecida caem numa linha própria no fim.
-	index := map[string]int{}
-	for _, pr := range st.SettingsFor(mode).Priorities {
-		index[pr.ID] = len(stats.Lines)
-		stats.Lines = append(stats.Lines, PriorityLine{Label: pr.Title})
-	}
-	other := -1
-	line := func(id string) *PriorityLine {
-		if i, ok := index[id]; ok {
-			return &stats.Lines[i]
-		}
-		if other < 0 {
-			other = len(stats.Lines)
-			stats.Lines = append(stats.Lines, PriorityLine{Label: "Sem prioridade"})
-		}
-		return &stats.Lines[other]
-	}
-
-	catIndex := map[string]int{}
-	for _, c := range st.SettingsFor(mode).Categories {
-		catIndex[c.ID] = len(stats.Categories)
-		stats.Categories = append(stats.Categories, PriorityLine{Label: c.Title})
-	}
-	catOther := -1
-	catLine := func(id string) *PriorityLine {
-		if i, ok := catIndex[id]; ok {
-			return &stats.Categories[i]
-		}
-		if catOther < 0 {
-			catOther = len(stats.Categories)
-			stats.Categories = append(stats.Categories, PriorityLine{Label: "Sem categoria"})
-		}
-		return &stats.Categories[catOther]
-	}
+	cfg := st.SettingsFor(mode)
+	// Uma linha por item configurado, na ordem da configuração; o que não está
+	// mais configurado (ou não foi preenchido) cai numa linha de sobra no fim.
+	prios := newTally(priorityLabels(cfg.Priorities), "Sem prioridade")
+	cats := newTally(categoryLabels(cfg.Categories), "Sem categoria")
+	subs := newTally(subcategoryLabels(cfg.Subcategories), "Sem subcategoria")
+	diffs := newTally(difficultyLabels(cfg.Difficulties), "Sem dificuldade")
 
 	var deliverySum time.Duration
 	var deliveryN int
 	for _, t := range done {
-		line(t.PriorityID).Done++
-		catLine(t.CategoryID).Done++
+		prios.line(t.PriorityID).Done++
+		cats.line(t.CategoryID).Done++
+		subs.line(t.SubcategoryID).Done++
+		diffs.line(t.DifficultyID).Done++
 		if t.HasDue() {
 			stats.DoneWithDue++
 			if t.DoneAt.After(t.DueAt) {
@@ -435,8 +486,10 @@ func TaskStatsFor(st *model.State, mode model.Mode, p Period, ref time.Time) Tas
 		}
 	}
 	for _, t := range open {
-		line(t.PriorityID).Open++
-		catLine(t.CategoryID).Open++
+		prios.line(t.PriorityID).Open++
+		cats.line(t.CategoryID).Open++
+		subs.line(t.SubcategoryID).Open++
+		diffs.line(t.DifficultyID).Open++
 		switch {
 		case !t.HasDue():
 			stats.NoDueOpen++
@@ -444,6 +497,10 @@ func TaskStatsFor(st *model.State, mode model.Mode, p Period, ref time.Time) Tas
 			stats.OverdueOpen++
 		}
 	}
+	stats.Lines = prios.lines
+	stats.Categories = cats.lines
+	stats.Subcategories = subs.lines
+	stats.Difficulties = diffs.lines
 
 	if stats.DoneWithDue > 0 {
 		stats.LateRatio = float64(stats.DoneLate) / float64(stats.DoneWithDue)

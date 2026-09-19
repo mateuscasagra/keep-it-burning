@@ -32,6 +32,10 @@ func newLinkRow(ref string) *linkRow {
 type taskFormScreen struct {
 	// editing guarda o ID da tarefa em edição; vazio significa tarefa nova.
 	editing string
+	// returnTo é a tela que abriu o formulário. Salvar ou cancelar volta para
+	// lá, e não sempre para o dashboard: quem veio da lista expandida perderia
+	// a busca e os filtros no caminho.
+	returnTo screenID
 
 	title widget.Editor
 	due   widget.Editor
@@ -40,11 +44,19 @@ type taskFormScreen struct {
 	dueLast string
 	desc    widget.Editor
 
-	priorityID   string
-	priorityBtns []widget.Clickable
+	// Os quatro campos de escolha são menus suspensos: em fila de botões, uma
+	// lista um pouco maior já não cabia na largura da tela.
+	priorityID string
+	prioSel    selectField
 
-	categoryID   string
-	categoryBtns []widget.Clickable
+	difficultyID string
+	diffSel      selectField
+
+	categoryID string
+	catSel     selectField
+
+	subcategoryID string
+	subSel        selectField
 
 	links   []*linkRow
 	addLink widget.Clickable
@@ -59,6 +71,10 @@ type taskFormScreen struct {
 
 	today widget.Bool
 
+	// group cuida dos quatro menus juntos: um aberto por vez e clique fora
+	// fecha.
+	group selectGroup
+
 	save   widget.Clickable
 	cancel widget.Clickable
 
@@ -66,6 +82,7 @@ type taskFormScreen struct {
 }
 
 func (s *taskFormScreen) init(a *App) {
+	s.group.init(&s.prioSel, &s.diffSel, &s.catSel, &s.subSel)
 	s.title.SingleLine = true
 	s.title.Submit = true
 	s.due.SingleLine = true
@@ -74,8 +91,9 @@ func (s *taskFormScreen) init(a *App) {
 }
 
 // openNew prepara o formulário para uma tarefa nova.
-func (s *taskFormScreen) openNew(a *App) {
+func (s *taskFormScreen) openNew(a *App, returnTo screenID) {
 	s.editing = ""
+	s.returnTo = returnTo
 	s.title.SetText("")
 	s.due.SetText("")
 	s.dueLast = ""
@@ -90,73 +108,76 @@ func (s *taskFormScreen) openNew(a *App) {
 	if len(prios) > 0 {
 		s.priorityID = prios[0].ID
 	}
+	// Dificuldade, categoria e subcategoria nascem vazias: são opcionais, e sem
+	// dificuldade a tarefa pesa o fator neutro.
+	s.difficultyID = ""
 	s.categoryID = ""
+	s.subcategoryID = ""
 	s.links = nil
 	s.files = nil
-	s.syncPriorityButtons(a)
-	s.syncCategoryButtons(a)
+	s.closeSelects()
 }
 
 // openEdit carrega uma tarefa existente no formulário.
-func (s *taskFormScreen) openEdit(a *App, t model.Task) {
+func (s *taskFormScreen) openEdit(a *App, t model.Task, returnTo screenID) {
 	s.editing = t.ID
+	s.returnTo = returnTo
 	s.title.SetText(t.Title)
 	s.due.SetText(formatDateInput(t.DueAt))
 	s.dueLast = s.due.Text()
 	s.desc.SetText(t.Description)
 	s.today.Value = t.Today
 	s.priorityID = t.PriorityID
+	s.difficultyID = t.DifficultyID
 	s.categoryID = t.CategoryID
+	s.subcategoryID = t.SubcategoryID
 	s.links = make([]*linkRow, 0, len(t.Links))
 	for _, ref := range t.Links {
 		s.links = append(s.links, newLinkRow(ref))
 	}
 	s.files = append([]string(nil), t.Files...)
 	s.err = ""
-	s.syncPriorityButtons(a)
-	s.syncCategoryButtons(a)
+	s.closeSelects()
 }
 
-// syncPriorityButtons garante um botão por prioridade configurada.
-func (s *taskFormScreen) syncPriorityButtons(a *App) {
-	n := len(a.state.SettingsFor(a.mode).Priorities)
-	if len(s.priorityBtns) != n {
-		s.priorityBtns = make([]widget.Clickable, n)
-	}
+// closeSelects fecha os menus abertos — abrir o formulário de novo com um menu
+// pendurado seria uma surpresa desagradável.
+func (s *taskFormScreen) closeSelects() {
+	s.group.closeAll()
 }
 
-// syncCategoryButtons garante um botão por categoria, mais o "Nenhuma" na
-// posição zero — categoria é opcional.
-func (s *taskFormScreen) syncCategoryButtons(a *App) {
-	n := len(a.state.SettingsFor(a.mode).Categories) + 1
-	if len(s.categoryBtns) != n {
-		s.categoryBtns = make([]widget.Clickable, n)
+// resizeClicks devolve uma fatia com n botões, reaproveitando a atual quando o
+// tamanho já bate — recriar a cada quadro perderia o estado do clique.
+func resizeClicks(clicks []widget.Clickable, n int) []widget.Clickable {
+	if len(clicks) == n {
+		return clicks
 	}
+	return make([]widget.Clickable, n)
 }
 
 func (s *taskFormScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
-	s.syncPriorityButtons(a)
-	s.syncCategoryButtons(a)
 	cfg := a.state.SettingsFor(a.mode)
-	prios, cats := cfg.Priorities, cfg.Categories
+	prioOpts := priorityOptions(cfg.Priorities)
+	diffOpts := difficultyOptions(cfg.Difficulties)
+	catOpts := categoryOptions(cfg.Categories)
+	subOpts := subcategoryOptions(cfg.Subcategories)
 
-	for i := range s.priorityBtns {
-		if s.priorityBtns[i].Clicked(gtx) && i < len(prios) {
-			s.priorityID = prios[i].ID
-		}
+	if id, ok := s.prioSel.update(gtx, prioOpts); ok {
+		s.priorityID = id
 	}
-	for i := range s.categoryBtns {
-		if !s.categoryBtns[i].Clicked(gtx) {
-			continue
-		}
-		if i == 0 {
-			s.categoryID = ""
-		} else if i-1 < len(cats) {
-			s.categoryID = cats[i-1].ID
-		}
+	if id, ok := s.diffSel.update(gtx, diffOpts); ok {
+		s.difficultyID = id
 	}
+	if id, ok := s.catSel.update(gtx, catOpts); ok {
+		s.categoryID = id
+	}
+	if id, ok := s.subSel.update(gtx, subOpts); ok {
+		s.subcategoryID = id
+	}
+	s.group.update(gtx)
+
 	if s.cancel.Clicked(gtx) {
-		a.goTo(screenDashboard)
+		a.goTo(s.returnTo)
 	}
 	if s.addLink.Clicked(gtx) {
 		s.links = append(s.links, newLinkRow(""))
@@ -205,7 +226,7 @@ func (s *taskFormScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	}
 	if s.save.Clicked(gtx) || submitted {
 		if s.commit(a) {
-			a.goTo(screenDashboard)
+			a.goTo(s.returnTo)
 		}
 	}
 
@@ -213,6 +234,20 @@ func (s *taskFormScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if s.editing != "" {
 		heading = "Editar tarefa"
 	}
+
+	return layout.Stack{}.Layout(gtx,
+		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return s.content(gtx, a, heading, prioOpts, diffOpts, catOpts, subOpts)
+		}),
+		// O véu fica entre o formulário e o menu, que é desenhado por último.
+		layout.Stacked(s.group.scrimLayout),
+	)
+}
+
+// content é o formulário em si.
+func (s *taskFormScreen) content(gtx layout.Context, a *App, heading string,
+	prioOpts, diffOpts, catOpts, subOpts []selectOption) layout.Dimensions {
 
 	return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return a.th.panelFill(gtx, unit.Dp(18), func(gtx layout.Context) layout.Dimensions {
@@ -239,26 +274,7 @@ func (s *taskFormScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 				}),
 				layout.Rigid(spacerY(12).Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{}.Layout(gtx,
-						layout.Flexed(1.4, func(gtx layout.Context) layout.Dimensions {
-							return s.priorityField(gtx, a, prios)
-						}),
-						layout.Rigid(spacerX(16).Layout),
-						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							return a.th.field(gtx, "Data para entrega", &s.due, "dd/mm/aaaa hh:mm")
-						}),
-					)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					// O campo só aparece quando o modo tem categorias criadas
-					// nas configurações; sem elas, a tarefa fica sem categoria.
-					if len(cats) == 0 {
-						return layout.Dimensions{}
-					}
-					return layout.Inset{Top: unit.Dp(12)}.Layout(gtx,
-						func(gtx layout.Context) layout.Dimensions {
-							return s.categoryField(gtx, a, cats)
-						})
+					return s.choicesRow(gtx, a, prioOpts, diffOpts, catOpts, subOpts)
 				}),
 				layout.Rigid(spacerY(12).Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -303,64 +319,80 @@ func (s *taskFormScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	})
 }
 
-// priorityField desenha as prioridades como botões selecionáveis.
-func (s *taskFormScreen) priorityField(gtx layout.Context, a *App, prios []model.Priority) layout.Dimensions {
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.th.small("Prioridade").Layout),
-		layout.Rigid(spacerY(6).Layout),
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			if len(prios) == 0 {
-				return a.th.small("Nenhuma prioridade configurada.").Layout(gtx)
-			}
-			children := make([]layout.FlexChild, 0, len(prios)*2)
-			for i, p := range prios {
-				i, p := i, p
-				children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					b := a.th.button(p.Title + " · " + itoa(p.Value))
-					b.Size, b.PadX, b.PadY = unit.Sp(13), unit.Dp(12), unit.Dp(7)
-					b.Radius = unit.Dp(9)
-					if p.ID == s.priorityID {
-						b.Bg = colorAccent
-						b.Fg = colorPaper
-						b.Emphasis = true
-					}
-					return b.Layout(gtx, a.th, &s.priorityBtns[i])
-				}))
-				children = append(children, layout.Rigid(spacerX(6).Layout))
-			}
-			return layout.Flex{}.Layout(gtx, children...)
-		}),
-	)
-}
+// choicesRow põe os campos de escolha e o prazo numa linha só. Cada campo é um
+// menu suspenso: a lista pode crescer à vontade nas configurações sem empurrar
+// nada para fora da tela.
+func (s *taskFormScreen) choicesRow(gtx layout.Context, a *App,
+	prioOpts, diffOpts, catOpts, subOpts []selectOption) layout.Dimensions {
 
-// categoryField desenha as categorias como botões selecionáveis, com o
-// "Nenhuma" na frente porque categoria é opcional.
-func (s *taskFormScreen) categoryField(gtx layout.Context, a *App, cats []model.Category) layout.Dimensions {
-	catBtn := func(i int, id, title string) layout.FlexChild {
-		return layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			b := a.th.button(title)
-			b.Size, b.PadX, b.PadY = unit.Sp(13), unit.Dp(12), unit.Dp(7)
-			b.Radius = unit.Dp(9)
-			if id == s.categoryID {
-				b.Bg = colorInk
-				b.Fg = colorPaper
-				b.Emphasis = true
-			}
-			return b.Layout(gtx, a.th, &s.categoryBtns[i])
+	sel := func(f *selectField, label string, opts []selectOption, selected string) layout.FlexChild {
+		return layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return f.layout(gtx, a.th, label, opts, selected)
 		})
 	}
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.th.small("Categoria").Layout),
-		layout.Rigid(spacerY(6).Layout),
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			children := make([]layout.FlexChild, 0, (len(cats)+1)*2)
-			children = append(children, catBtn(0, "", "Nenhuma"), layout.Rigid(spacerX(6).Layout))
-			for i, c := range cats {
-				children = append(children, catBtn(i+1, c.ID, c.Title), layout.Rigid(spacerX(6).Layout))
-			}
-			return layout.Flex{}.Layout(gtx, children...)
+	children := []layout.FlexChild{
+		sel(&s.prioSel, "Prioridade", prioOpts, s.priorityID),
+	}
+	// Um campo sem nada configurado não vira um menu vazio: ele simplesmente
+	// não aparece, como já acontecia com a categoria.
+	if len(diffOpts) > 1 {
+		children = append(children, layout.Rigid(spacerX(12).Layout),
+			sel(&s.diffSel, "Dificuldade", diffOpts, s.difficultyID))
+	}
+	if len(catOpts) > 1 {
+		children = append(children, layout.Rigid(spacerX(12).Layout),
+			sel(&s.catSel, "Categoria", catOpts, s.categoryID))
+	}
+	if len(subOpts) > 1 {
+		children = append(children, layout.Rigid(spacerX(12).Layout),
+			sel(&s.subSel, "Subcategoria", subOpts, s.subcategoryID))
+	}
+	children = append(children,
+		layout.Rigid(spacerX(12).Layout),
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return a.th.field(gtx, "Data para entrega", &s.due, "dd/mm/aaaa hh:mm")
 		}),
 	)
+	return layout.Flex{Alignment: layout.Start}.Layout(gtx, children...)
+}
+
+// priorityOptions monta as opções do campo de prioridade. Ela é obrigatória,
+// então não tem "Nenhuma"; o valor aparece junto porque é o peso da tarefa.
+func priorityOptions(prios []model.Priority) []selectOption {
+	out := make([]selectOption, 0, len(prios))
+	for _, p := range prios {
+		out = append(out, selectOption{id: p.ID, title: p.Title + " · " + itoa(p.Value)})
+	}
+	return out
+}
+
+// difficultyOptions monta as opções do campo de dificuldade, com o "Nenhuma" na
+// frente — sem dificuldade escolhida a tarefa usa o fator neutro.
+func difficultyOptions(diffs []model.Difficulty) []selectOption {
+	out := make([]selectOption, 0, len(diffs)+1)
+	out = append(out, selectOption{title: "Nenhuma"})
+	for _, d := range diffs {
+		out = append(out, selectOption{id: d.ID, title: d.Title + " · " + itoa(d.Value)})
+	}
+	return out
+}
+
+func categoryOptions(cats []model.Category) []selectOption {
+	out := make([]selectOption, 0, len(cats)+1)
+	out = append(out, selectOption{title: "Nenhuma"})
+	for _, c := range cats {
+		out = append(out, selectOption{id: c.ID, title: c.Title})
+	}
+	return out
+}
+
+func subcategoryOptions(subs []model.Subcategory) []selectOption {
+	out := make([]selectOption, 0, len(subs)+1)
+	out = append(out, selectOption{title: "Nenhuma"})
+	for _, c := range subs {
+		out = append(out, selectOption{id: c.ID, title: c.Title})
+	}
+	return out
 }
 
 // linksField edita a lista de links da tarefa.
@@ -486,16 +518,18 @@ func (s *taskFormScreen) commit(a *App) bool {
 	}
 
 	task := model.Task{
-		ID:          s.editing,
-		Mode:        a.mode,
-		Title:       title,
-		Description: strings.TrimSpace(s.desc.Text()),
-		PriorityID:  s.priorityID,
-		CategoryID:  s.categoryID,
-		Links:       s.collectLinks(),
-		Files:       append([]string(nil), s.files...),
-		DueAt:       due,
-		Today:       s.today.Value,
+		ID:            s.editing,
+		Mode:          a.mode,
+		Title:         title,
+		Description:   strings.TrimSpace(s.desc.Text()),
+		PriorityID:    s.priorityID,
+		DifficultyID:  s.difficultyID,
+		CategoryID:    s.categoryID,
+		SubcategoryID: s.subcategoryID,
+		Links:         s.collectLinks(),
+		Files:         append([]string(nil), s.files...),
+		DueAt:         due,
+		Today:         s.today.Value,
 	}
 
 	if s.editing == "" {

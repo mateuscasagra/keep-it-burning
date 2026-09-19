@@ -327,3 +327,71 @@ func TestModeLabelEValid(t *testing.T) {
 		t.Error("Valid deveria aceitar só trabalho e estudo")
 	}
 }
+
+func TestDifficultyFactorENeutroQuandoFalta(t *testing.T) {
+	s := NewState()
+	if got := s.DifficultyFactor(ModeWork, "dificil"); got != 3 {
+		t.Errorf("fator de difícil = %d, quero 3", got)
+	}
+	// Tarefa sem dificuldade — e tarefa com uma dificuldade que o usuário
+	// apagou da configuração — precisa valer 1, o fator neutro: é o que mantém
+	// o peso das tarefas antigas exatamente como era antes do campo existir.
+	if got := s.DifficultyFactor(ModeWork, ""); got != 1 {
+		t.Errorf("fator sem dificuldade = %d, quero 1", got)
+	}
+	if got := s.DifficultyFactor(ModeWork, "removida"); got != 1 {
+		t.Errorf("fator de dificuldade removida = %d, quero 1", got)
+	}
+}
+
+func TestTaskWeightMultiplicaPrioridadePorDificuldade(t *testing.T) {
+	s := NewState()
+	tests := []struct {
+		name string
+		task Task
+		want float64
+	}{
+		{"alta e difícil", Task{PriorityID: "alta", DifficultyID: "dificil"}, 15},
+		{"alta e fácil", Task{PriorityID: "alta", DifficultyID: "facil"}, 5},
+		{"alta sem dificuldade", Task{PriorityID: "alta"}, 5},
+		{"baixa e difícil", Task{PriorityID: "baixa", DifficultyID: "dificil"}, 3},
+		{"sem prioridade não pesa", Task{DifficultyID: "dificil"}, 0},
+	}
+	for _, tc := range tests {
+		if got := s.TaskWeight(ModeWork, tc.task); got != tc.want {
+			t.Errorf("%s: peso = %v, quero %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestNormalizeGaranteAEscalaDeDificuldade(t *testing.T) {
+	// Arquivo gravado antes de a dificuldade existir: a escala precisa aparecer
+	// sozinha, senão o campo abriria sem nenhuma opção para escolher.
+	s := &State{Settings: map[Mode]ModeSettings{
+		ModeWork: {Priorities: DefaultPriorities(), DailyTarget: time.Hour, WeeklyTarget: 5 * time.Hour},
+	}}
+	s.Normalize()
+	for _, m := range Modes {
+		if len(s.SettingsFor(m).Difficulties) == 0 {
+			t.Errorf("modo %s ficou sem dificuldades", m)
+		}
+	}
+}
+
+func TestSubcategoryEncontraEIgnora(t *testing.T) {
+	s := NewState()
+	cfg := s.SettingsFor(ModeWork)
+	cfg.Subcategories = []Subcategory{{ID: "front", Title: "Front-end"}}
+	s.SetSettings(ModeWork, cfg)
+
+	if got, ok := s.Subcategory(ModeWork, "front"); !ok || got.Title != "Front-end" {
+		t.Errorf("subcategoria = %+v, ok = %v", got, ok)
+	}
+	if _, ok := s.Subcategory(ModeWork, "nao-existe"); ok {
+		t.Error("subcategoria inexistente não devia ser encontrada")
+	}
+	// A lista é por modo: o que foi criado no trabalho não vaza para o estudo.
+	if _, ok := s.Subcategory(ModeStudy, "front"); ok {
+		t.Error("subcategoria do trabalho não devia aparecer no estudo")
+	}
+}

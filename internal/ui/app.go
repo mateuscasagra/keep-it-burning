@@ -35,13 +35,21 @@ const (
 	screenStats
 	screenFocus
 	screenTaskView
+	screenPending
 )
 
-// Tamanhos das janelas. A janela cheia é o dashboard; a reduzida é o modo
-// foco, que fica de canto na tela enquanto o usuário trabalha.
+// Tamanhos das janelas, um por forma de visualização. A cheia é o dashboard;
+// a reduzida e a mini ficam de canto na tela enquanto o usuário trabalha.
 var (
-	fullSize  = image.Pt(1040, 700)
+	// A janela cheia precisa desta largura para a tabela de tarefas caber sem
+	// espremer as colunas de categoria, subcategoria e dificuldade.
+	fullSize  = image.Pt(1240, 700)
 	focusSize = image.Pt(360, 470)
+
+	// minSize é o limite mínimo da janela. Fica um pouco abaixo da menor
+	// visualização, senão o Windows recusa o encolhimento e a janela reduzida
+	// abre maior do que devia.
+	minSize = image.Pt(320, 420)
 )
 
 // Frequência da animação da fogueira. 30 quadros por segundo é suave o
@@ -58,7 +66,14 @@ type App struct {
 	mode  model.Mode
 
 	screen screenID
-	tmr    *timer.Timer
+	// vmode é a forma de visualização escolhida no seletor; é independente do
+	// cronômetro, que corre igual em qualquer uma delas.
+	vmode viewMode
+	// winMode acompanha o estado da janela no sistema (janela, maximizada,
+	// tela cheia). Sem ele o app não tem como saber que já está ocupando a
+	// tela toda e acabaria encolhendo a janela do usuário.
+	winMode app.WindowMode
+	tmr     *timer.Timer
 
 	// expl abre os diálogos nativos de escolher arquivo.
 	expl *explorer.Explorer
@@ -76,6 +91,10 @@ type App struct {
 	// Atualizar; nil quando não há atualização em andamento.
 	updateCh chan updateResult
 	updating bool
+	// handedOff marca que o estado já foi gravado e o app novo assumiu. Daí em
+	// diante esta instância não pode mais gravar: ela só tem uma cópia velha do
+	// estado, e sobrescrever o disco apagaria o que o app novo já mexeu.
+	handedOff bool
 
 	home     homeScreen
 	dash     dashboardScreen
@@ -84,6 +103,7 @@ type App struct {
 	stats    statsScreen
 	focus    focusScreen
 	view     taskViewScreen
+	pending  pendingScreen
 }
 
 // New monta o aplicativo, carregando o estado gravado.
@@ -99,6 +119,7 @@ func New(win *app.Window, st *store.Store) (*App, error) {
 		state:     state,
 		mode:      model.ModeWork,
 		screen:    screenHome,
+		vmode:     viewFull,
 		startedAt: time.Now(),
 	}
 	a.tmr = timer.New(a.mode)
@@ -109,6 +130,7 @@ func New(win *app.Window, st *store.Store) (*App, error) {
 	a.stats.init(a)
 	a.focus.init(a)
 	a.view.init(a)
+	a.pending.init(a)
 	return a, nil
 }
 
@@ -116,7 +138,7 @@ func New(win *app.Window, st *store.Store) (*App, error) {
 func (a *App) Run() error {
 	a.win.Option(app.Title("Keep It Burning"), app.Size(
 		unit.Dp(fullSize.X), unit.Dp(fullSize.Y)),
-		app.MinSize(unit.Dp(340), unit.Dp(430)),
+		app.MinSize(unit.Dp(minSize.X), unit.Dp(minSize.Y)),
 	)
 
 	var ops op.Ops
@@ -126,6 +148,8 @@ func (a *App) Run() error {
 		// diálogos nativos de arquivo.
 		a.expl.ListenEvents(evt)
 		switch e := evt.(type) {
+		case app.ConfigEvent:
+			a.winMode = e.Config.Mode
 		case app.DestroyEvent:
 			a.shutdown()
 			return e.Err
@@ -142,6 +166,11 @@ func (a *App) Run() error {
 // shutdown grava o que estiver pendente antes de fechar, para não perder o
 // tempo cronometrado da sessão em andamento.
 func (a *App) shutdown() {
+	// Depois de entregar o lugar ao app novo não há nada pendente para gravar:
+	// o estado já foi para o disco e o cronômetro já foi parado.
+	if a.handedOff {
+		return
+	}
 	if sessions := a.tmr.Stop(); len(sessions) > 0 {
 		for _, s := range sessions {
 			a.state.AddSession(s)
@@ -172,6 +201,8 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 		return a.focus.Layout(gtx, a)
 	case screenTaskView:
 		return a.view.Layout(gtx, a)
+	case screenPending:
+		return a.pending.Layout(gtx, a)
 	default:
 		return layout.Dimensions{Size: gtx.Constraints.Max}
 	}
@@ -223,20 +254,47 @@ func (a *App) goTo(s screenID) {
 	a.screen = s
 }
 
-// enterFocus reduz a janela e começa a contar o tempo.
-func (a *App) enterFocus() {
-	a.screen = screenFocus
-	a.tmr.Start()
-	a.win.Option(app.Size(unit.Dp(focusSize.X), unit.Dp(focusSize.Y)))
+// setView troca a forma de visualização: redimensiona a janela e vai para a
+// tela correspondente. Nunca mexe no cronômetro — mudar de visualização não
+// começa nem interrompe a sessão; só os trechos já fechados vão para o disco.
+func (a *App) setView(m viewMode) {
+	opt := viewOptionFor(m)
+	prev := a.vmode
+	a.vmode = opt.mode
+	a.flushSessions()
+	if opt.mode == viewFull {
+		a.screen = screenDashboard
+	} else {
+		a.screen = screenFocus
+	}
+	if opts := windowOptionsFor(opt.mode, prev, a.winMode); len(opts) > 0 {
+		a.win.Option(opts...)
+	}
 }
 
-// leaveFocus volta ao dashboard e restaura o tamanho da janela sem pausar a
-// contagem: expandir a tela não interrompe a sessão. Só os trechos já
-// fechados vão para o disco.
-func (a *App) leaveFocus() {
-	a.flushSessions()
-	a.screen = screenDashboard
-	a.win.Option(app.Size(unit.Dp(fullSize.X), unit.Dp(fullSize.Y)))
+// windowOptionsFor decide como a janela precisa ser ajustada ao entrar em uma
+// forma de visualização. Devolve nada quando não há o que mexer — e é aí que
+// está a graça: app.Size sempre devolve a janela ao modo "janela", então pedir
+// o tamanho à toa desmaximiza quem só queria entrar no painel.
+func windowOptionsFor(target, prev viewMode, mode app.WindowMode) []app.Option {
+	if target == prev {
+		// A forma não mudou: escolher trabalho ou estudo na tela inicial não é
+		// um pedido para redimensionar nada.
+		return nil
+	}
+	if target == viewFull && mode != app.Windowed {
+		// Maximizada ou em tela cheia, a janela já ocupa o que a visualização
+		// completa quer — e mais.
+		return nil
+	}
+	opt := viewOptionFor(target)
+	return []app.Option{app.Size(unit.Dp(opt.size.X), unit.Dp(opt.size.Y))}
+}
+
+// startTimer começa a contar o tempo sem mudar a visualização: o botão
+// Iniciar só liga o cronômetro, a janela fica como está.
+func (a *App) startTimer() {
+	a.tmr.Start()
 }
 
 // pauseTimer pausa a contagem e grava o trecho recém-fechado em disco.
@@ -354,6 +412,8 @@ func (a *App) pollUpdate() {
 			a.setError("Build ok, mas não consegui reabrir o app: " + err.Error())
 			return
 		}
+		// A partir daqui quem manda no arquivo é o app novo.
+		a.handedOff = true
 		a.closeWindow()
 	default:
 	}
@@ -371,6 +431,24 @@ func (a *App) toggleDone(id string) {
 		return
 	}
 	a.save()
+}
+
+// completeTask marca a tarefa como concluída num momento escolhido, que nem
+// sempre é agora: uma tarefa feita ontem e riscada da lista hoje precisa pesar
+// no relatório de ontem.
+func (a *App) completeTask(id string, at time.Time) {
+	t, ok := a.state.Task(id)
+	if !ok {
+		return
+	}
+	if err := a.state.SetDone(id, true, at); err != nil {
+		a.setError(err.Error())
+		return
+	}
+	a.save()
+	// Concluir tira a tarefa da lista de pendentes; sem o aviso o sumiço
+	// pareceria um erro da tela.
+	a.setInfo("Tarefa “" + truncate(t.Title, 30) + "” concluída em " + formatDateTime(at) + ".")
 }
 
 // toggleToday inclui ou tira a tarefa da lista do dia.

@@ -56,6 +56,8 @@ type dashboardScreen struct {
 	start  widget.Clickable
 	more   widget.Clickable
 	add    widget.Clickable
+	expand widget.Clickable
+	views  viewPicker
 
 	todayRows   rowSet
 	pendingRows rowSet
@@ -72,6 +74,7 @@ func (s *dashboardScreen) init(a *App) {
 }
 
 func (s *dashboardScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
+	s.views.update(gtx, a)
 	if s.back.Clicked(gtx) {
 		// Voltar à tela inicial Trabalho/Estudo é um dos únicos pontos que
 		// pausam a contagem — expandir a janela não pausa.
@@ -86,19 +89,41 @@ func (s *dashboardScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		a.goTo(screenStats)
 	}
 	if s.add.Clicked(gtx) {
-		a.form.openNew(a)
+		a.form.openNew(a, screenDashboard)
 		a.goTo(screenTaskForm)
 	}
+	if s.expand.Clicked(gtx) {
+		a.pending.open(a)
+		a.goTo(screenPending)
+	}
 	if s.start.Clicked(gtx) {
+		// Iniciar só liga o cronômetro: quem escolhe como a janela aparece é o
+		// seletor de visualização, na barra de cima.
 		if a.tmr.Running() {
 			a.pauseTimer()
 		} else {
-			a.enterFocus()
+			a.startTimer()
 		}
 	}
 
 	rep := a.report(productivity.PeriodDay)
 
+	return layout.Stack{}.Layout(gtx,
+		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return s.content(gtx, a, rep)
+		}),
+		// O menu de visualização é desenhado por último para ficar por cima do
+		// painel, ancorado logo abaixo do botão que o abriu.
+		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return s.views.overlay(gtx, a, unit.Dp(78), unit.Dp(32))
+		}),
+	)
+}
+
+// content é o painel do dashboard em si, sem os menus sobrepostos.
+func (s *dashboardScreen) content(gtx layout.Context, a *App, rep productivity.Report) layout.Dimensions {
 	return layout.UniformInset(unit.Dp(16)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return a.th.panelFill(gtx, unit.Dp(16), func(gtx layout.Context) layout.Dimensions {
 			gtx.Constraints.Min = gtx.Constraints.Max
@@ -125,7 +150,8 @@ func (s *dashboardScreen) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	})
 }
 
-// topBar desenha a seta de voltar e o acesso às configurações.
+// topBar desenha a seta de voltar, o seletor de visualização e o acesso às
+// configurações.
 func (s *dashboardScreen) topBar(gtx layout.Context, a *App) layout.Dimensions {
 	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -138,6 +164,10 @@ func (s *dashboardScreen) topBar(gtx layout.Context, a *App) layout.Dimensions {
 		layout.Rigid(spacerX(12).Layout),
 		layout.Rigid(a.th.heading(a.mode.Label()).Layout),
 		layout.Flexed(1, layout.Spacer{}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return s.views.button(gtx, a, false)
+		}),
+		layout.Rigid(spacerX(10).Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return a.th.button("Configurações").Layout(gtx, a.th, &s.config)
 		}),
@@ -318,6 +348,7 @@ func (s *dashboardScreen) todayItem(gtx layout.Context, a *App, t model.Task) la
 // pendingPanel é a tabela inferior de tarefas pendentes.
 func (s *dashboardScreen) pendingPanel(gtx layout.Context, a *App) layout.Dimensions {
 	tasks := a.state.PendingTasks(a.mode)
+	cols := taskColsFor(a.state.SettingsFor(a.mode))
 
 	alive := make(map[string]bool, len(tasks))
 	for _, t := range tasks {
@@ -338,11 +369,20 @@ func (s *dashboardScreen) pendingPanel(gtx layout.Context, a *App) layout.Dimens
 						b.Radius = unit.Dp(9)
 						return b.Layout(gtx, a.th, &s.add)
 					}),
+					layout.Rigid(spacerX(8).Layout),
+					// O Expandir leva à tela cheia de pendentes, onde cabem a
+					// busca e os filtros que não cabem aqui.
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						b := a.th.button("Expandir")
+						b.Size, b.PadX, b.PadY = unit.Sp(14), unit.Dp(16), unit.Dp(7)
+						b.Radius = unit.Dp(9)
+						return b.Layout(gtx, a.th, &s.expand)
+					}),
 				)
 			}),
 			layout.Rigid(spacerY(10).Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return pendingHeader(gtx, a.th)
+				return cols.header(gtx, a.th, dashActionsWidth, &s.pendingList)
 			}),
 			layout.Rigid(spacerY(4).Layout),
 			layout.Rigid(separator),
@@ -353,41 +393,23 @@ func (s *dashboardScreen) pendingPanel(gtx layout.Context, a *App) layout.Dimens
 				}
 				return material.List(a.th.Theme, &s.pendingList).Layout(gtx, len(tasks),
 					func(gtx layout.Context, i int) layout.Dimensions {
-						return s.pendingItem(gtx, a, tasks[i])
+						return s.pendingItem(gtx, a, tasks[i], cols)
 					})
 			}),
 		)
 	})
 }
 
-// Larguras relativas das colunas da tabela de pendentes.
-const (
-	colTitle    = 0.30
-	colCreated  = 0.15
-	colDue      = 0.15
-	colPriority = 0.12
-	colActions  = 0.28
-)
-
-func pendingHeader(gtx layout.Context, th *Theme) layout.Dimensions {
-	head := func(txt string) layout.Widget {
-		return th.label(unit.Sp(13), txt, colorInkSoft).Layout
-	}
-	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-		layout.Flexed(colTitle, head("Tarefa")),
-		layout.Flexed(colCreated, head("Data Incluída")),
-		layout.Flexed(colDue, head("Data Limite")),
-		layout.Flexed(colPriority, head("Prioridade")),
-		layout.Flexed(colActions, head("Ações")),
-	)
-}
+// dashActionsWidth é a largura da coluna de ações do dashboard: editar,
+// excluir e o botão de tarefa do dia.
+const dashActionsWidth = unit.Dp(248)
 
 // pendingItem desenha uma linha da tabela com as ações da tarefa.
-func (s *dashboardScreen) pendingItem(gtx layout.Context, a *App, t model.Task) layout.Dimensions {
+func (s *dashboardScreen) pendingItem(gtx layout.Context, a *App, t model.Task, cols taskCols) layout.Dimensions {
 	row := s.pendingRows.get(t.ID)
 
 	if row.edit.Clicked(gtx) {
-		a.form.openEdit(a, t)
+		a.form.openEdit(a, t, screenDashboard)
 		a.goTo(screenTaskForm)
 	}
 	if row.del.Clicked(gtx) {
@@ -397,64 +419,30 @@ func (s *dashboardScreen) pendingItem(gtx layout.Context, a *App, t model.Task) 
 		a.toggleToday(t.ID)
 	}
 
-	prio, hasPrio := a.state.Priority(a.mode, t.PriorityID)
-	prioLabel := "—"
-	prioColor := colorInkFaint
-	if hasPrio {
-		prioLabel = prio.Title
-		prioColor = colorInk
-	}
-
-	dueColor := colorInk
-	if t.Overdue(time.Now()) {
-		dueColor = colorDanger
-	}
-
 	todayLabel := "tarefa do dia"
 	if t.Today {
 		todayLabel = "tirar do dia"
 	}
 
-	return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Right: unit.Dp(4)}.Layout(gtx,
-		func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-				layout.Flexed(colTitle, func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-						layout.Rigid(a.th.label(unit.Sp(14), truncate(t.Title, 34), colorInk).Layout),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							if t.Description == "" {
-								return layout.Dimensions{}
-							}
-							return a.th.label(unit.Sp(12), truncate(t.Description, 42), colorInkFaint).Layout(gtx)
-						}),
-					)
-				}),
-				layout.Flexed(colCreated, a.th.label(unit.Sp(13), formatDateTime(t.CreatedAt), colorInkSoft).Layout),
-				layout.Flexed(colDue, a.th.label(unit.Sp(13), formatDateTime(t.DueAt), dueColor).Layout),
-				layout.Flexed(colPriority, a.th.label(unit.Sp(13), prioLabel, prioColor).Layout),
-				layout.Flexed(colActions, func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return a.th.tiny("editar").Layout(gtx, a.th, &row.edit)
-						}),
-						layout.Rigid(spacerX(5).Layout),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							b := a.th.tiny("excluir")
-							b.Fg = colorDanger
-							return b.Layout(gtx, a.th, &row.del)
-						}),
-						layout.Rigid(spacerX(5).Layout),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							b := a.th.tiny(todayLabel)
-							if t.Today {
-								b.Bg = colorHover
-							}
-							return b.Layout(gtx, a.th, &row.today)
-						}),
-					)
-				}),
-			)
-		})
+	return cols.row(gtx, a, t, dashActionsWidth, func(gtx layout.Context) layout.Dimensions {
+		return actionButtons(gtx,
+			func(gtx layout.Context) layout.Dimensions {
+				return a.th.tiny("editar").Layout(gtx, a.th, &row.edit)
+			},
+			func(gtx layout.Context) layout.Dimensions {
+				b := a.th.tiny("excluir")
+				b.Fg = colorDanger
+				return b.Layout(gtx, a.th, &row.del)
+			},
+			func(gtx layout.Context) layout.Dimensions {
+				b := a.th.tiny(todayLabel)
+				if t.Today {
+					b.Bg = colorHover
+				}
+				return b.Layout(gtx, a.th, &row.today)
+			},
+		)
+	})
 }
 
 // itoa é um atalho para converter contagens em texto nas telas.

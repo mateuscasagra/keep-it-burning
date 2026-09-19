@@ -9,12 +9,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/dvet/keep-it-burning/internal/model"
 )
 
 // FileName é o nome do arquivo de dados dentro do diretório do app.
 const FileName = "data.json"
+
+// BackupSuffix é o sufixo do espelho do arquivo de dados. O espelho guarda os
+// mesmos bytes da última gravação bem-sucedida e só é lido quando o arquivo
+// principal some ou chega corrompido.
+const BackupSuffix = ".bak"
 
 // Store lê e grava o estado em um caminho fixo.
 type Store struct {
@@ -29,6 +35,9 @@ func New(path string) *Store {
 // Path devolve o caminho do arquivo de dados — o app mostra isso ao usuário
 // na tela de configuração.
 func (s *Store) Path() string { return s.path }
+
+// backupPath devolve o caminho do espelho do arquivo de dados.
+func (s *Store) backupPath() string { return s.path + BackupSuffix }
 
 // DefaultPath devolve o caminho padrão do arquivo de dados:
 // %AppData%\KeepItBurning\data.json no Windows, e o equivalente conforme o
@@ -57,27 +66,45 @@ func Default() (*Store, error) {
 
 // Load lê o estado do disco. Se o arquivo ainda não existe, devolve um estado
 // novo com as configurações padrão — é o primeiro uso do app, não um erro.
+//
+// Antes de concluir "primeiro uso" ou de desistir com erro, o espelho é
+// consultado: um arquivo principal ausente também pode ser o instante em que
+// outra instância estava trocando o arquivo, e abrir vazio nessa hora custaria
+// todas as tarefas na gravação seguinte.
 func (s *Store) Load() (*model.State, error) {
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		st := model.NewState()
+	st, err := s.loadFile(s.path)
+	if err == nil {
 		return st, nil
 	}
+	if bak, bakErr := s.loadFile(s.backupPath()); bakErr == nil {
+		return bak, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return model.NewState(), nil
+	}
+	return nil, err
+}
+
+// loadFile lê e normaliza um arquivo de estado. Erros de sistema chegam
+// intactos para o chamador conseguir distinguir "não existe" de "ilegível".
+func (s *Store) loadFile(path string) (*model.State, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("ler %s: %w", s.path, err)
+		return nil, fmt.Errorf("ler %s: %w", path, err)
 	}
 
 	st := &model.State{}
 	if err := json.Unmarshal(data, st); err != nil {
-		return nil, fmt.Errorf("interpretar %s: %w", s.path, err)
+		return nil, fmt.Errorf("interpretar %s: %w", path, err)
 	}
 	st.Normalize()
 	return st, nil
 }
 
-// Save grava o estado. A escrita é feita em um arquivo temporário no mesmo
-// diretório e depois renomeada por cima do original: ou o arquivo antigo
-// continua inteiro, ou o novo está completo — nunca um meio-termo corrompido.
+// Save grava o estado e atualiza o espelho. A escrita é feita em um arquivo
+// temporário no mesmo diretório e depois renomeada por cima do original: ou o
+// arquivo antigo continua inteiro, ou o novo está completo — nunca um
+// meio-termo corrompido, e nunca um instante sem arquivo nenhum.
 func (s *Store) Save(st *model.State) error {
 	if st == nil {
 		return errors.New("estado nulo")
@@ -92,7 +119,19 @@ func (s *Store) Save(st *model.State) error {
 		return fmt.Errorf("serializar estado: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".keepitburning-*.tmp")
+	if err := writeAtomic(s.path, data); err != nil {
+		return err
+	}
+	// O espelho vem depois: o estado já está gravado, então não conseguir
+	// atualizá-lo é perder uma rede de proteção, não perder os dados.
+	_ = writeAtomic(s.backupPath(), data)
+	return nil
+}
+
+// writeAtomic grava os bytes em path de forma que um leitor concorrente veja
+// ou o conteúdo antigo inteiro, ou o novo inteiro.
+func writeAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".keepitburning-*.tmp")
 	if err != nil {
 		return fmt.Errorf("criar arquivo temporário: %w", err)
 	}
@@ -112,13 +151,42 @@ func (s *Store) Save(st *model.State) error {
 		return fmt.Errorf("fechar arquivo temporário: %w", err)
 	}
 
-	// No Windows os.Rename não sobrescreve um arquivo aberto por outro
-	// processo; remover antes torna a troca confiável nas duas plataformas.
-	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remover arquivo antigo: %w", err)
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		return fmt.Errorf("substituir %s: %w", s.path, err)
+	// os.Rename troca por cima do destino tanto no Windows quanto no Unix, e a
+	// troca é atômica: um leitor vê o arquivo antigo ou o novo, nunca a
+	// ausência dos dois. Apagar o original antes seria mais simples, mas abre
+	// uma fresta em que o arquivo não existe — e outra instância lendo justo
+	// nessa fresta entende que é o primeiro uso e abre sem nenhuma tarefa.
+	if err := renameOver(tmpName, path); err != nil {
+		// Último recurso, para o caso de o arquivo estar mesmo preso: apagar
+		// antes reabre a fresta, mas o espelho gravado pelo Save cobre quem
+		// tentar ler nesse intervalo.
+		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return fmt.Errorf("remover arquivo antigo: %w", rmErr)
+		}
+		if err := os.Rename(tmpName, path); err != nil {
+			return fmt.Errorf("substituir %s: %w", path, err)
+		}
 	}
 	return nil
+}
+
+// Quanto o renameOver insiste antes de desistir da troca direta.
+const (
+	renameTentativas = 20
+	renameEspera     = 5 * time.Millisecond
+)
+
+// renameOver renomeia tmpName por cima de path, insistindo por um instante. No
+// Windows a troca é recusada com "acesso negado" enquanto outro processo tiver
+// o arquivo aberto — e até um os.Stat conta. A fresta dura microssegundos, então
+// repetir resolve onde apagar o arquivo só faria estrago.
+func renameOver(tmpName, path string) error {
+	var err error
+	for i := 0; i < renameTentativas; i++ {
+		if err = os.Rename(tmpName, path); err == nil {
+			return nil
+		}
+		time.Sleep(renameEspera)
+	}
+	return err
 }

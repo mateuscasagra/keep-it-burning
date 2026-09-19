@@ -60,14 +60,35 @@ type Category struct {
 	Title string `json:"title"`
 }
 
+// Subcategory é um recorte mais fino que a categoria (ex.: "Front-end"). É uma
+// lista independente: a subcategoria não pertence a uma categoria, ela só
+// classifica a tarefa por outro ângulo. Como a categoria, não pesa no score.
+type Subcategory struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// Difficulty é o grau de dificuldade configurável. Value é o multiplicador do
+// peso da tarefa: entregar algo difícil alimenta mais o fogo do que entregar
+// algo fácil de mesma prioridade.
+type Difficulty struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Value int    `json:"value"`
+}
+
 // Task é uma tarefa de trabalho ou estudo.
 type Task struct {
-	ID          string    `json:"id"`
-	Mode        Mode      `json:"mode"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	PriorityID  string    `json:"priorityId"`
-	CategoryID  string    `json:"categoryId,omitempty"`
+	ID          string `json:"id"`
+	Mode        Mode   `json:"mode"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	PriorityID  string `json:"priorityId"`
+	CategoryID  string `json:"categoryId,omitempty"`
+	// SubcategoryID é o recorte fino, independente da categoria; DifficultyID
+	// é o grau de dificuldade, que multiplica o peso da tarefa no score.
+	SubcategoryID string `json:"subcategoryId,omitempty"`
+	DifficultyID  string `json:"difficultyId,omitempty"`
 	// Links são endereços web anexados à tarefa; Files são caminhos de
 	// arquivos locais (imagens, vídeos, documentos). O app não copia os
 	// arquivos: guarda o caminho e visualiza ou abre a partir dele.
@@ -75,7 +96,7 @@ type Task struct {
 	Files []string `json:"files,omitempty"`
 	// Attachments é o campo antigo unificado; Normalize o migra para
 	// Links/Files ao carregar dados de versões anteriores.
-	Attachments []string `json:"attachments,omitempty"`
+	Attachments []string  `json:"attachments,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	DueAt       time.Time `json:"dueAt"`
 	// Today marca a tarefa como "tarefa do dia": ela aparece no painel lateral
@@ -123,10 +144,14 @@ func (s Session) Duration() time.Duration {
 // configuração: são as metas contra as quais o tempo cronometrado é comparado.
 type ModeSettings struct {
 	Priorities []Priority `json:"priorities"`
-	// Categories começa vazio: o usuário cria as suas na tela de configuração.
-	Categories   []Category    `json:"categories,omitempty"`
-	DailyTarget  time.Duration `json:"dailyTarget"`
-	WeeklyTarget time.Duration `json:"weeklyTarget"`
+	// Categories e Subcategories começam vazias: o usuário cria as suas na tela
+	// de configuração. Difficulties, como as prioridades, sempre tem conteúdo —
+	// ela entra no cálculo do score e o app precisa de uma escala para oferecer.
+	Categories    []Category    `json:"categories,omitempty"`
+	Subcategories []Subcategory `json:"subcategories,omitempty"`
+	Difficulties  []Difficulty  `json:"difficulties,omitempty"`
+	DailyTarget   time.Duration `json:"dailyTarget"`
+	WeeklyTarget  time.Duration `json:"weeklyTarget"`
 }
 
 // State é o estado completo e persistido do aplicativo.
@@ -156,6 +181,17 @@ func DefaultPriorities() []Priority {
 	}
 }
 
+// DefaultDifficulties devolve a escala de dificuldade inicial de um modo novo.
+// Os valores multiplicam o peso da tarefa, então a mais fácil vale 1: assim a
+// escala começa sem inflar nem esvaziar o score de quem não usa o campo.
+func DefaultDifficulties() []Difficulty {
+	return []Difficulty{
+		{ID: "facil", Title: "Fácil", Value: 1},
+		{ID: "media", Title: "Média", Value: 2},
+		{ID: "dificil", Title: "Difícil", Value: 3},
+	}
+}
+
 // NewState devolve um estado zerado com as configurações padrão dos dois modos.
 func NewState() *State {
 	return &State{
@@ -164,11 +200,13 @@ func NewState() *State {
 		Settings: map[Mode]ModeSettings{
 			ModeWork: {
 				Priorities:   DefaultPriorities(),
+				Difficulties: DefaultDifficulties(),
 				DailyTarget:  8 * time.Hour,
 				WeeklyTarget: 40 * time.Hour,
 			},
 			ModeStudy: {
 				Priorities:   DefaultPriorities(),
+				Difficulties: DefaultDifficulties(),
 				DailyTarget:  2 * time.Hour,
 				WeeklyTarget: 10 * time.Hour,
 			},
@@ -199,6 +237,12 @@ func (s *State) Normalize() {
 		}
 		if len(cfg.Priorities) == 0 {
 			cfg.Priorities = DefaultPriorities()
+		}
+		// A escala de dificuldade nunca fica vazia: ela entra no score, e uma
+		// lista vazia deixaria o campo da tarefa sem nada para escolher. É
+		// também o que traz a escala para quem já usava o app antes do campo.
+		if len(cfg.Difficulties) == 0 {
+			cfg.Difficulties = DefaultDifficulties()
 		}
 		if cfg.DailyTarget <= 0 {
 			cfg.DailyTarget = defaults.Settings[m].DailyTarget
@@ -265,6 +309,26 @@ func (s *State) Category(m Mode, id string) (Category, bool) {
 	return Category{}, false
 }
 
+// Subcategory procura uma subcategoria pelo ID dentro de um modo.
+func (s *State) Subcategory(m Mode, id string) (Subcategory, bool) {
+	for _, c := range s.SettingsFor(m).Subcategories {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return Subcategory{}, false
+}
+
+// Difficulty procura uma dificuldade pelo ID dentro de um modo.
+func (s *State) Difficulty(m Mode, id string) (Difficulty, bool) {
+	for _, d := range s.SettingsFor(m).Difficulties {
+		if d.ID == id {
+			return d, true
+		}
+	}
+	return Difficulty{}, false
+}
+
 // PriorityValue devolve o peso de uma prioridade. Uma prioridade removida da
 // configuração mas ainda referenciada por tarefas antigas vale zero.
 func (s *State) PriorityValue(m Mode, id string) int {
@@ -272,6 +336,23 @@ func (s *State) PriorityValue(m Mode, id string) int {
 		return p.Value
 	}
 	return 0
+}
+
+// DifficultyFactor devolve o multiplicador de uma dificuldade. Tarefa sem
+// dificuldade — ou com uma que foi removida da configuração — vale 1, o fator
+// neutro: assim tarefa antiga continua pesando exatamente o que pesava.
+func (s *State) DifficultyFactor(m Mode, id string) int {
+	if d, ok := s.Difficulty(m, id); ok && d.Value > 0 {
+		return d.Value
+	}
+	return 1
+}
+
+// TaskWeight é o peso da tarefa no score: o valor da prioridade multiplicado
+// pelo da dificuldade. É o número que Analyze soma dos dois lados da conta,
+// entregues e em aberto.
+func (s *State) TaskWeight(m Mode, t Task) float64 {
+	return float64(s.PriorityValue(m, t.PriorityID)) * float64(s.DifficultyFactor(m, t.DifficultyID))
 }
 
 // ErrTaskNotFound é devolvido quando um ID de tarefa não existe.

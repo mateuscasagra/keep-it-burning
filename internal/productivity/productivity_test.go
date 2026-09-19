@@ -520,3 +520,79 @@ func TestDoneTasksInFiltraEOrdena(t *testing.T) {
 		}
 	}
 }
+
+// difficultyFixture é o stateFixture com a escala de dificuldade configurada:
+// facil=1, media=2, dificil=3.
+func difficultyFixture() *model.State {
+	st := stateFixture()
+	cfg := st.SettingsFor(model.ModeWork)
+	cfg.Difficulties = model.DefaultDifficulties()
+	st.SetSettings(model.ModeWork, cfg)
+	return st
+}
+
+func TestAnalyzeDificuldadeMultiplicaOPeso(t *testing.T) {
+	st := difficultyFixture()
+	// Entregue: uma média (3) difícil (×3) = 9.
+	st.AddTask(model.Task{ID: "a", Mode: model.ModeWork, Title: "Difícil", PriorityID: "media",
+		DifficultyID: "dificil", Done: true, DoneAt: at(5, 10, 0)})
+	// Pendente: uma média (3) fácil (×1) = 3. Razão de tarefas = 9/12.
+	st.AddTask(model.Task{ID: "b", Mode: model.ModeWork, Title: "Fácil", PriorityID: "media",
+		DifficultyID: "facil", Today: true})
+
+	rep := Analyze(st, model.ModeWork, PeriodDay, at(5, 18, 0))
+
+	if !nearly(rep.DoneWeight, 9) || !nearly(rep.PendingWeight, 3) {
+		t.Errorf("pesos = %v entregue / %v pendente, quero 9 e 3", rep.DoneWeight, rep.PendingWeight)
+	}
+	if !nearly(rep.TaskRatio, 0.75) {
+		t.Errorf("TaskRatio = %v, quero 0.75", rep.TaskRatio)
+	}
+	// Sem a dificuldade as duas tarefas teriam o mesmo peso e a razão seria
+	// 0,5: é exatamente essa diferença que o campo precisa produzir.
+	if nearly(rep.TaskRatio, 0.5) {
+		t.Error("a dificuldade não mudou nada no score")
+	}
+}
+
+func TestAnalyzeSemDificuldadeMantemOPesoAntigo(t *testing.T) {
+	st := difficultyFixture()
+	// Mesma conta do score clássico, com a escala configurada mas nenhuma
+	// tarefa usando: o fator neutro precisa manter a razão em 5/6.
+	st.AddTask(model.Task{ID: "a", Mode: model.ModeWork, Title: "Alta", PriorityID: "alta", Done: true, DoneAt: at(5, 10, 0)})
+	st.AddTask(model.Task{ID: "b", Mode: model.ModeWork, Title: "Baixa", PriorityID: "baixa", Today: true})
+
+	rep := Analyze(st, model.ModeWork, PeriodDay, at(5, 18, 0))
+
+	if !nearly(rep.TaskRatio, 5.0/6.0) {
+		t.Errorf("TaskRatio = %v, quero 5/6", rep.TaskRatio)
+	}
+}
+
+func TestTaskStatsFatiaPorSubcategoriaEDificuldade(t *testing.T) {
+	st := difficultyFixture()
+	cfg := st.SettingsFor(model.ModeWork)
+	cfg.Subcategories = []model.Subcategory{{ID: "front", Title: "Front-end"}}
+	st.SetSettings(model.ModeWork, cfg)
+
+	st.AddTask(model.Task{ID: "a", Mode: model.ModeWork, Title: "Entregue", PriorityID: "alta",
+		DifficultyID: "dificil", SubcategoryID: "front", Done: true, DoneAt: at(5, 10, 0)})
+	st.AddTask(model.Task{ID: "b", Mode: model.ModeWork, Title: "Aberta", PriorityID: "alta", Today: true})
+
+	ts := TaskStatsFor(st, model.ModeWork, PeriodDay, at(5, 18, 0))
+
+	// Uma linha por item configurado, mais a linha de sobra criada pela tarefa
+	// que não preencheu o campo.
+	if len(ts.Subcategories) != 2 || ts.Subcategories[0].Label != "Front-end" || ts.Subcategories[0].Done != 1 {
+		t.Errorf("subcategorias = %+v", ts.Subcategories)
+	}
+	if last := ts.Subcategories[len(ts.Subcategories)-1]; last.Label != "Sem subcategoria" || last.Open != 1 {
+		t.Errorf("linha de sobra das subcategorias = %+v", last)
+	}
+	if len(ts.Difficulties) != 4 {
+		t.Errorf("dificuldades = %+v, quero as três configuradas mais a sobra", ts.Difficulties)
+	}
+	if ts.Difficulties[2].Label != "Difícil" || ts.Difficulties[2].Done != 1 {
+		t.Errorf("linha de difícil = %+v", ts.Difficulties[2])
+	}
+}
